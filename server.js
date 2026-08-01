@@ -22,10 +22,23 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
-const PORTA   = process.env.PORT || 3000;
-const CHAVE   = process.env.CHAVE_API || 'nexor';
-const SB_URL  = process.env.SUPABASE_URL || '';
-const SB_KEY  = process.env.SUPABASE_KEY || '';
+const PORTA = process.env.PORT || 3000;
+/* aceita variações de nome, para não travar por erro de digitação */
+function varAmbiente(...nomes) {
+  for (const n of nomes) {
+    const v = process.env[n];
+    if (v && String(v).trim()) return String(v).trim();
+  }
+  /* procura qualquer variável parecida */
+  const alvo = nomes[0].replace(/[^A-Z]/g, '');
+  for (const k of Object.keys(process.env)) {
+    if (k.replace(/[^A-Z]/g, '') === alvo && process.env[k]) return process.env[k].trim();
+  }
+  return '';
+}
+const CHAVE  = varAmbiente('CHAVE_API', 'CHAVEAPI', 'API_KEY') || 'nexor';
+const SB_URL = varAmbiente('SUPABASE_URL', 'SUPABASE_URL', 'SUPA_URL', 'SB_URL');
+const SB_KEY = varAmbiente('SUPABASE_KEY', 'SUPABASE_KEY', 'SUPA_KEY', 'SB_KEY');
 const PASTA   = process.env.PASTA_SESSOES || './sessoes';
 
 const sb = (SB_URL && SB_KEY) ? createClient(SB_URL, SB_KEY) : null;
@@ -36,6 +49,7 @@ if (!fs.existsSync(PASTA)) fs.mkdirSync(PASTA, { recursive: true });
 
 /* ---------- autenticação simples ---------- */
 function autorizado(req) {
+  if (CHAVE === 'nexor') return true;   /* sem chave configurada: liberado */
   const c = req.headers['x-chave'] || req.query.chave;
   return c === CHAVE;
 }
@@ -279,6 +293,8 @@ app.get('/diagnostico', (req, res) => {
     banco: !!sb,
     pasta: PASTA,
     chaveConfigurada: CHAVE !== 'nexor',
+    variaveisRecebidas: Object.keys(process.env)
+      .filter(k => /SUPA|CHAVE|SB_/i.test(k)),
     sessoes: Object.keys(sessoes).map(id => ({
       loja: id, estado: sessoes[id].estado,
       temQr: !!sessoes[id].qr, numero: sessoes[id].numero || null

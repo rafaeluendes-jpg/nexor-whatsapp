@@ -44,9 +44,8 @@ function acharPorConteudo(teste) {
   }
   return '';
 }
-const CHAVE  = varAmbiente('CHAVE_API', 'CHAVEAPI', 'API_KEY')
-            || acharPorConteudo(v => /^Nexor/i.test(v) && v.length < 40)
-            || 'nexor';
+const CHAVE = varAmbiente('CHAVE_API', 'CHAVEAPI', 'API_KEY') || '';
+const EXIGE_CHAVE = String(process.env.EXIGIR_CHAVE || '') === 'sim';
 const SB_URL = varAmbiente('SUPABASE_URL', 'SUPA_URL', 'SB_URL')
             || acharPorConteudo(v => /^https:\/\/[a-z0-9]+\.supabase\.co/.test(v));
 const SB_KEY = varAmbiente('SUPABASE_KEY', 'SUPA_KEY', 'SB_KEY')
@@ -63,7 +62,7 @@ if (!fs.existsSync(PASTA)) fs.mkdirSync(PASTA, { recursive: true });
 
 /* ---------- autenticação simples ---------- */
 function autorizado(req) {
-  if (CHAVE === 'nexor') return true;   /* sem chave configurada: liberado */
+  if (!EXIGE_CHAVE) return true;        /* liberado até você ligar a exigência */
   const c = req.headers['x-chave'] || req.query.chave;
   return c === CHAVE;
 }
@@ -306,7 +305,7 @@ app.get('/diagnostico', (req, res) => {
     ok: true,
     banco: !!sb,
     pasta: PASTA,
-    chaveConfigurada: CHAVE !== 'nexor',
+    chaveExigida: EXIGE_CHAVE,
     variaveisRecebidas: Object.keys(process.env)
       .filter(k => /SUPA|CHAVE|SB_/i.test(k)),
     sessoes: Object.keys(sessoes).map(id => ({

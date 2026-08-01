@@ -12,6 +12,8 @@ const { createClient } = require('@supabase/supabase-js');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
+  initAuthCreds,
+  BufferJSON,
   DisconnectReason,
   fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
@@ -85,7 +87,9 @@ async function conectar(lojaId, forcar) {
   const dir = path.join(PASTA, String(lojaId));
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  const { state, saveCreds } = await useMultiFileAuthState(dir);
+  const { state, saveCreds } = sb
+    ? await authNoBanco(lojaId)
+    : await useMultiFileAuthState(dir);
   const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
@@ -126,6 +130,7 @@ async function conectar(lojaId, forcar) {
       console.log(`[${lojaId}] caiu (${motivo}) — ${deslogado ? 'precisa ler o QR de novo' : 'reconectando'}`);
       if (deslogado) {
         try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
+        limparSessaoBanco(lojaId);
       } else {
         setTimeout(() => conectar(lojaId).catch(() => {}), 4000);
       }
@@ -161,6 +166,69 @@ async function conectar(lojaId, forcar) {
   });
 
   return sessoes[lojaId];
+}
+
+/* ==========================================================
+   Sessão guardada no banco — sobrevive a reinícios do servidor
+   ========================================================== */
+async function authNoBanco(lojaId) {
+  async function ler(chave) {
+    try {
+      const { data } = await sb.from('whatsapp_sessoes')
+        .select('dados').eq('loja_id', lojaId).eq('chave', chave).maybeSingle();
+      return data ? JSON.parse(data.dados, BufferJSON.reviver) : null;
+    } catch (e) { return null; }
+  }
+  async function gravar(chave, valor) {
+    try {
+      await sb.from('whatsapp_sessoes').upsert({
+        loja_id: lojaId, chave,
+        dados: JSON.stringify(valor, BufferJSON.replacer),
+        quando: new Date().toISOString()
+      }, { onConflict: 'loja_id,chave' });
+    } catch (e) { console.error('erro ao gravar sessao:', e.message); }
+  }
+  async function apagar(chave) {
+    try { await sb.from('whatsapp_sessoes').delete()
+      .eq('loja_id', lojaId).eq('chave', chave); } catch (e) {}
+  }
+
+  const creds = (await ler('creds')) || initAuthCreds();
+
+  return {
+    state: {
+      creds,
+      keys: {
+        get: async (tipo, ids) => {
+          const r = {};
+          await Promise.all(ids.map(async id => {
+            let v = await ler(tipo + '-' + id);
+            if (tipo === 'app-state-sync-key' && v) {
+              const { proto } = require('@whiskeysockets/baileys');
+              v = proto.Message.AppStateSyncKeyData.fromObject(v);
+            }
+            if (v) r[id] = v;
+          }));
+          return r;
+        },
+        set: async (dados) => {
+          const tarefas = [];
+          for (const tipo in dados) {
+            for (const id in dados[tipo]) {
+              const v = dados[tipo][id];
+              tarefas.push(v ? gravar(tipo + '-' + id, v) : apagar(tipo + '-' + id));
+            }
+          }
+          await Promise.all(tarefas);
+        }
+      }
+    },
+    saveCreds: () => gravar('creds', creds)
+  };
+}
+async function limparSessaoBanco(lojaId) {
+  if (!sb) return;
+  try { await sb.from('whatsapp_sessoes').delete().eq('loja_id', lojaId); } catch (e) {}
 }
 
 /* ---------- respostas automáticas ---------- */
@@ -324,6 +392,7 @@ app.post('/desconectar/:loja', protege, async (req, res) => {
   const s = sessoes[req.params.loja];
   try { await s?.sock?.logout(); } catch (e) {}
   try { fs.rmSync(path.join(PASTA, String(req.params.loja)), { recursive: true, force: true }); } catch (e) {}
+  await limparSessaoBanco(req.params.loja);
   delete sessoes[req.params.loja];
   res.json({ ok: true });
 });
@@ -362,10 +431,23 @@ app.post('/enviar', protege, async (req, res) => {
 
 /* reconecta as sessões salvas ao subir */
 async function retomar() {
+  /* sessões guardadas no banco */
+  if (sb) {
+    try {
+      const { data } = await sb.from('whatsapp_sessoes')
+        .select('loja_id').eq('chave', 'creds');
+      for (const r of (data || [])) {
+        console.log('retomando loja', r.loja_id, '(do banco)');
+        conectar(r.loja_id).catch(() => {});
+      }
+      if ((data || []).length) return;
+    } catch (e) { console.error('erro ao retomar do banco:', e.message); }
+  }
+  /* sessões em arquivo, se houver */
   try {
     for (const d of fs.readdirSync(PASTA)) {
       if (fs.existsSync(path.join(PASTA, d, 'creds.json'))) {
-        console.log('retomando loja', d);
+        console.log('retomando loja', d, '(do disco)');
         conectar(d).catch(() => {});
       }
     }

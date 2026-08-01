@@ -36,9 +36,23 @@ function varAmbiente(...nomes) {
   }
   return '';
 }
-const CHAVE  = varAmbiente('CHAVE_API', 'CHAVEAPI', 'API_KEY') || 'nexor';
-const SB_URL = varAmbiente('SUPABASE_URL', 'SUPABASE_URL', 'SUPA_URL', 'SB_URL');
-const SB_KEY = varAmbiente('SUPABASE_KEY', 'SUPABASE_KEY', 'SUPA_KEY', 'SB_KEY');
+/* acha a variável pelo CONTEÚDO, não pelo nome — imune a erro de digitação */
+function acharPorConteudo(teste) {
+  for (const k of Object.keys(process.env)) {
+    const v = String(process.env[k] || '').trim();
+    if (v && teste(v)) return v;
+  }
+  return '';
+}
+const CHAVE  = varAmbiente('CHAVE_API', 'CHAVEAPI', 'API_KEY')
+            || acharPorConteudo(v => /^Nexor/i.test(v) && v.length < 40)
+            || 'nexor';
+const SB_URL = varAmbiente('SUPABASE_URL', 'SUPA_URL', 'SB_URL')
+            || acharPorConteudo(v => /^https:\/\/[a-z0-9]+\.supabase\.co/.test(v));
+const SB_KEY = varAmbiente('SUPABASE_KEY', 'SUPA_KEY', 'SB_KEY')
+            || acharPorConteudo(v => /^(sb_publishable_|eyJ)/.test(v));
+console.log('banco:', SB_URL ? 'encontrado' : 'faltando',
+            '| chave do banco:', SB_KEY ? 'encontrada' : 'faltando');
 const PASTA   = process.env.PASTA_SESSOES || './sessoes';
 
 const sb = (SB_URL && SB_KEY) ? createClient(SB_URL, SB_KEY) : null;

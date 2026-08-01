@@ -333,9 +333,22 @@ app.post('/enviar', protege, async (req, res) => {
   const { loja, telefone, texto } = req.body || {};
   if (!loja || !telefone || !texto)
     return res.status(400).json({ erro: 'informe loja, telefone e texto' });
-  const s = sessoes[loja];
-  if (!s?.sock || s.estado !== 'conectado')
-    return res.status(409).json({ erro: 'loja não conectada', estado: s?.estado || 'desligado' });
+  let s = sessoes[loja];
+  /* a loja pedida não tem sessão? usa a única conectada, se houver */
+  if (!s?.sock || s.estado !== 'conectado') {
+    const conectadas = Object.keys(sessoes)
+      .filter(k => sessoes[k]?.sock && sessoes[k].estado === 'conectado');
+    if (conectadas.length === 1) {
+      console.log('loja ' + loja + ' sem sessao — usando ' + conectadas[0]);
+      s = sessoes[conectadas[0]];
+    } else {
+      return res.status(409).json({
+        erro: 'nenhuma loja conectada',
+        pedida: loja,
+        conectadas: conectadas
+      });
+    }
+  }
   try {
     const num = String(telefone).replace(/\D/g, '');
     const jid = (num.startsWith('55') ? num : '55' + num) + '@s.whatsapp.net';

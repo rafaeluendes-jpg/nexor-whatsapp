@@ -45,8 +45,15 @@ function protege(req, res, next) {
 }
 
 /* ---------- conexão de uma loja ---------- */
-async function conectar(lojaId) {
-  if (sessoes[lojaId]?.sock) return sessoes[lojaId];
+async function conectar(lojaId, forcar) {
+  if (sessoes[lojaId]?.estado === 'conectado' && sessoes[lojaId]?.sock)
+    return sessoes[lojaId];
+  /* sessão pendurada sem QR: derruba e começa de novo */
+  if (forcar && sessoes[lojaId]) {
+    try { sessoes[lojaId].sock?.end?.(); } catch (e) {}
+    delete sessoes[lojaId];
+  }
+  if (sessoes[lojaId]?.sock && sessoes[lojaId]?.qr) return sessoes[lojaId];
 
   const dir = path.join(PASTA, String(lojaId));
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -72,7 +79,9 @@ async function conectar(lojaId) {
 
   sock.ev.on('connection.update', async (u) => {
     const { connection, lastDisconnect, qr } = u;
+    if (u.connection) console.log('[' + lojaId + '] conexao:', u.connection);
     if (qr) {
+      console.log('[' + lojaId + '] QR gerado');
       sessoes[lojaId].qr = await QRCode.toDataURL(qr);
       sessoes[lojaId].estado = 'aguardando_qr';
     }
@@ -238,15 +247,43 @@ app.get('/', (_, res) => res.json({
 
 /* liga uma loja e devolve o QR */
 app.post('/conectar/:loja', protege, async (req, res) => {
+  const loja = req.params.loja;
   try {
-    const s = await conectar(req.params.loja);
+    console.log('[' + loja + '] pedido de conexao');
+    await conectar(loja, true);
     let tentativas = 0;
-    while (!s.qr && s.estado !== 'conectado' && tentativas < 25) {
-      await new Promise(r => setTimeout(r, 400));
+    while (tentativas < 60) {
+      const s = sessoes[loja];
+      if (s?.qr || s?.estado === 'conectado') break;
+      await new Promise(r => setTimeout(r, 500));
       tentativas++;
     }
-    res.json({ estado: s.estado, qr: s.qr || null, numero: s.numero || null });
-  } catch (e) { res.status(500).json({ erro: e.message }); }
+    const s = sessoes[loja] || {};
+    console.log('[' + loja + '] estado=' + s.estado + ' qr=' + (s.qr ? 'sim' : 'nao'));
+    res.json({
+      estado: s.estado || 'desligado',
+      qr: s.qr || null,
+      numero: s.numero || null,
+      esperou: tentativas * 0.5 + 's'
+    });
+  } catch (e) {
+    console.error('[' + loja + '] erro ao conectar:', e.message);
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+/* diagnóstico: mostra o que está acontecendo em cada loja */
+app.get('/diagnostico', (req, res) => {
+  res.json({
+    ok: true,
+    banco: !!sb,
+    pasta: PASTA,
+    chaveConfigurada: CHAVE !== 'nexor',
+    sessoes: Object.keys(sessoes).map(id => ({
+      loja: id, estado: sessoes[id].estado,
+      temQr: !!sessoes[id].qr, numero: sessoes[id].numero || null
+    }))
+  });
 });
 
 app.get('/estado/:loja', protege, (req, res) => {

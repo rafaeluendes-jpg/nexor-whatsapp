@@ -398,10 +398,25 @@ app.post('/desconectar/:loja', protege, async (req, res) => {
 });
 
 /* envia uma mensagem */
+const ultimosEnvios = [];
+function registrar(o) {
+  ultimosEnvios.unshift({ ...o, quando: new Date().toISOString() });
+  if (ultimosEnvios.length > 40) ultimosEnvios.pop();
+  console.log('[envio]', JSON.stringify(o));
+}
+app.get('/envios', (req, res) => res.json({
+  total: ultimosEnvios.length,
+  sessoes: Object.keys(sessoes).map(k => ({ loja: k, estado: sessoes[k].estado })),
+  envios: ultimosEnvios
+}));
+
 app.post('/enviar', protege, async (req, res) => {
   const { loja, telefone, texto } = req.body || {};
-  if (!loja || !telefone || !texto)
+  if (!loja || !telefone || !texto) {
+    registrar({ ok: false, motivo: 'faltou loja, telefone ou texto',
+      recebido: { loja, telefone, temTexto: !!texto } });
     return res.status(400).json({ erro: 'informe loja, telefone e texto' });
+  }
   let s = sessoes[loja];
   /* a loja pedida não tem sessão? usa a única conectada, se houver */
   if (!s?.sock || s.estado !== 'conectado') {
@@ -411,10 +426,10 @@ app.post('/enviar', protege, async (req, res) => {
       console.log('loja ' + loja + ' sem sessao — usando ' + conectadas[0]);
       s = sessoes[conectadas[0]];
     } else {
+      registrar({ ok: false, motivo: 'nenhuma loja conectada',
+        pedida: loja, conectadas, telefone });
       return res.status(409).json({
-        erro: 'nenhuma loja conectada',
-        pedida: loja,
-        conectadas: conectadas
+        erro: 'nenhuma loja conectada', pedida: loja, conectadas
       });
     }
   }
@@ -422,11 +437,15 @@ app.post('/enviar', protege, async (req, res) => {
     const num = String(telefone).replace(/\D/g, '');
     const jid = (num.startsWith('55') ? num : '55' + num) + '@s.whatsapp.net';
     await s.sock.sendMessage(jid, { text: texto });
+    registrar({ ok: true, para: jid, loja, inicio: texto.slice(0, 40) });
     if (sb) sb.from('whatsapp_mensagens').insert([{
       sucursal_id: loja, telefone: num, direcao: 'enviada', texto
     }]).then(() => {}, () => {});
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ erro: e.message }); }
+    res.json({ ok: true, para: jid });
+  } catch (e) {
+    registrar({ ok: false, motivo: 'erro ao enviar: ' + e.message, loja, telefone });
+    res.status(500).json({ erro: e.message });
+  }
 });
 
 /* reconecta as sessões salvas ao subir */

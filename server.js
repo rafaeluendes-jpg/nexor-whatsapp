@@ -155,6 +155,15 @@ async function montarResposta(lojaId, tel, texto) {
     return `Claro! Faça seu pedido por aqui:\n${link}\n\nÉ só escolher os sabores e enviar. O pedido cai direto no nosso sistema.`;
   if (/(hor[aá]rio|aberto|fecha|funciona)/.test(t))
     return cfg?.texto_horario || 'Estamos abertos de terça a domingo, das 14h às 22h30. Segunda é nosso dia de folga.';
+  /* o cliente citou um bairro ou cidade? responde com a taxa real */
+  const zona = await acharZona(t);
+  if (zona) {
+    return `Entrega em *${zona.nome}* 🛵\n\n` +
+      `Taxa: *R$ ${dinheiro(zona.taxa)}*` +
+      (zona.tempo ? `\nTempo médio: ${zona.tempo} minutos` : '') +
+      (zona.obs ? `\n_${zona.obs}_` : '') +
+      `\n\nMonte seu pedido aqui:\n${link}`;
+  }
   if (/(taxa|entrega|frete|entregam)/.test(t))
     return cfg?.texto_entrega || `A taxa varia pelo bairro. Ao montar o pedido em ${link} você escolhe sua região e vê o valor exato.`;
   if (/(pix|pagamento|pagar|cart[aã]o|dinheiro)/.test(t))
@@ -167,6 +176,49 @@ async function montarResposta(lojaId, tel, texto) {
   return null;
 }
 
+function dinheiro(v){
+  return (Number(v)||0).toFixed(2).replace('.', ',');
+}
+function semAcento(s){
+  return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+}
+/* procura o bairro ou a cidade que o cliente citou */
+let _zonasCache = { quando: 0, lista: [] };
+async function carregarZonas() {
+  if (!sb) return [];
+  if (Date.now() - _zonasCache.quando < 5 * 60 * 1000) return _zonasCache.lista;
+  try {
+    const { data } = await sb.from('areas_entrega').select('*, areas_zonas(*)');
+    const lista = [];
+    (data || []).forEach(a => {
+      lista.push({ nome: a.nome, taxa: a.taxa_padrao, tempo: a.tempo, cidade: a.nome, tipo: 'cidade' });
+      (a.areas_zonas || []).forEach(z => {
+        if (z.ativa === false) return;
+        lista.push({ nome: z.nome, taxa: z.taxa, tempo: z.tempo, obs: z.observacao,
+          cidade: a.nome, tipo: z.tipo });
+      });
+    });
+    _zonasCache = { quando: Date.now(), lista };
+    return lista;
+  } catch (e) { return []; }
+}
+async function acharZona(texto) {
+  const t = semAcento(texto);
+  const zonas = await carregarZonas();
+  /* casa pelo nome mais longo primeiro, para "jardim america" ganhar de "jardim" */
+  const ordenadas = zonas.slice().sort((a, b) => String(b.nome).length - String(a.nome).length);
+  for (const z of ordenadas) {
+    const n = semAcento(z.nome);
+    if (n.length < 4) continue;
+    if (t.includes(n)) return z;
+  }
+  /* palavras genéricas de zona rural */
+  if (/(sitio|chacara|rancho|fazenda|estrada|zona rural)/.test(t)) {
+    const rural = zonas.find(z => z.tipo === 'rural');
+    if (rural) return rural;
+  }
+  return null;
+}
 async function buscarCfg(lojaId) {
   if (!sb) return {};
   try {

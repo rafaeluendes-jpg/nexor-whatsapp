@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: nexor-whatsapp
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    disk:
+      name: sessoes
+      mountPath: /opt/render/project/src/sessoes
+      sizeGB: 1
+    envVars:
+      - key: CHAVE_API
+        generateValue: true
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false

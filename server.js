@@ -52,8 +52,13 @@ const SB_URL = varAmbiente('SUPABASE_URL', 'SUPA_URL', 'SB_URL')
             || acharPorConteudo(v => /^https:\/\/[a-z0-9]+\.supabase\.co/.test(v));
 const SB_KEY = varAmbiente('SUPABASE_KEY', 'SUPA_KEY', 'SB_KEY')
             || acharPorConteudo(v => /^(sb_publishable_|eyJ)/.test(v));
+/* chaves de IA — encontradas pelo formato, o nome não importa */
+const GROQ_KEY   = varAmbiente('GROQ_KEY','GROQ_API_KEY') || acharPorConteudo(v => /^gsk_/.test(v));
+const GEMINI_KEY = varAmbiente('GEMINI_KEY','GOOGLE_KEY') || acharPorConteudo(v => /^AIza/.test(v));
 console.log('banco:', SB_URL ? 'encontrado' : 'faltando',
             '| chave do banco:', SB_KEY ? 'encontrada' : 'faltando');
+console.log('IA — Groq:', GROQ_KEY ? 'ok' : 'faltando',
+            '| Gemini:', GEMINI_KEY ? 'ok' : 'faltando');
 const PASTA   = process.env.PASTA_SESSOES || './sessoes';
 
 const sb = (SB_URL && SB_KEY) ? createClient(SB_URL, SB_KEY) : null;
@@ -324,7 +329,102 @@ async function montarResposta(lojaId, tel, texto) {
       'boa','alo','bom']) || primeiraVez)
     return cfg?.saudacao ||
       `Olá! 👋 Bem-vindo a ${nome}.\n\nFaça seu pedido por aqui:\n${link}\n\nSe precisar, é só chamar.`;
+
+  /* nada das respostas prontas serviu: pergunta para a IA */
+  if (cfg?.ia_ativa !== false && (GROQ_KEY || GEMINI_KEY)) {
+    const r = await responderComIA(texto, tel, cfg, link, nome);
+    if (r) return r;
+  }
   return null;
+}
+
+/* ==========================================================
+   IA — responde o que as respostas prontas não cobrem
+   ========================================================== */
+const historico = {};   /* telefone -> últimas mensagens */
+
+async function montarContexto(cfg, link, nome) {
+  const sabores = await carregarSabores();
+  const zonas   = await carregarZonas();
+  const zonaTxt = zonas.filter(z => z.tipo !== 'padrao')
+    .map(z => `${z.nome} (${z.cidade}): R$ ${dinheiro(z.taxa)}`).join('; ');
+  const norm  = sabores.filter(s => !s.zero_acucar && !s.lancamento).map(s => s.nome);
+  const zero  = sabores.filter(s => s.zero_acucar).map(s => s.nome);
+  const novos = sabores.filter(s => s.lancamento).map(s => s.nome);
+
+  return `Você é o atendente virtual da ${nome}, uma gelateria artesanal.
+
+INFORMAÇÕES REAIS DE HOJE (use apenas estas, nunca invente):
+- Link do cardápio: ${link}
+- Horário: ${(cfg?.texto_horario || 'todos os dias das 12h às 23h').replace(/\n/g, ' ')}
+- Endereço: ${(cfg?.texto_endereco || 'informar pelo cardápio').replace(/\n/g, ' ')}
+- Pagamento: dinheiro, Pix, débito e crédito, pagos na entrega
+- Sabores tradicionais: ${norm.join(', ') || 'consultar no cardápio'}
+- Zero açúcar: ${zero.join(', ') || 'nenhum hoje'}
+- Lançamentos: ${novos.join(', ') || 'nenhum'}
+- Taxas de entrega: ${zonaTxt || 'variam por bairro, informar no cardápio'}
+
+COMO RESPONDER:
+- Português do Brasil, tom acolhedor e direto, como um atendente de loja de bairro
+- No máximo 3 frases curtas. Nada de textão.
+- Pode usar um emoji, no máximo dois
+- Quando fizer sentido, mande o link do cardápio
+- Se perguntarem algo que não está acima, diga com sinceridade que vai confirmar
+  com a equipe e peça um instante. NUNCA invente sabor, preço, taxa ou promoção.
+- Se o cliente quiser cancelar ou reclamar de um pedido, peça o número do pedido
+  e avise que a equipe vai verificar.
+- Não fale de assuntos fora da gelateria.`;
+}
+
+async function responderComIA(mensagem, tel, cfg, link, nome) {
+  const sistema = await montarContexto(cfg, link, nome);
+  historico[tel] = (historico[tel] || []).slice(-6);
+  const msgs = [...historico[tel], { role: 'user', content: mensagem }];
+
+  let resposta = null;
+  if (GROQ_KEY)   resposta = await chamarGroq(sistema, msgs);
+  if (!resposta && GEMINI_KEY) resposta = await chamarGemini(sistema, msgs);
+  if (!resposta) return null;
+
+  historico[tel] = [...msgs, { role: 'assistant', content: resposta }].slice(-6);
+  return resposta;
+}
+
+async function chamarGroq(sistema, msgs) {
+  try {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + GROQ_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'system', content: sistema }, ...msgs],
+        temperature: 0.5, max_tokens: 300
+      })
+    });
+    if (!r.ok) { console.log('groq falhou:', r.status); return null; }
+    const d = await r.json();
+    return d.choices?.[0]?.message?.content?.trim() || null;
+  } catch (e) { console.log('groq erro:', e.message); return null; }
+}
+
+async function chamarGemini(sistema, msgs) {
+  try {
+    const conteudo = msgs.map(m => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }]
+    }));
+    const r = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + GEMINI_KEY,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: sistema }] },
+          contents: conteudo,
+          generationConfig: { temperature: 0.5, maxOutputTokens: 300 }
+        }) });
+    if (!r.ok) { console.log('gemini falhou:', r.status); return null; }
+    const d = await r.json();
+    return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+  } catch (e) { console.log('gemini erro:', e.message); return null; }
 }
 
 function dinheiro(v){
@@ -460,6 +560,7 @@ app.get('/diagnostico', (req, res) => {
     banco: !!sb,
     pasta: PASTA,
     chaveExigida: EXIGE_CHAVE,
+    ia: { groq: !!GROQ_KEY, gemini: !!GEMINI_KEY },
     variaveisRecebidas: Object.keys(process.env)
       .filter(k => /SUPA|CHAVE|SB_/i.test(k)),
     sessoes: Object.keys(sessoes).map(id => ({

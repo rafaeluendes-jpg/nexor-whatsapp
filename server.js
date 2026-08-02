@@ -498,20 +498,74 @@ async function responderComIA(mensagem, tel, cfg, link, nome, primeiraVez) {
   historico[tel] = [...msgs, { role: 'assistant', content: resposta }].slice(-6);
   return resposta;
 }
+const MODELOS_GROQ = [
+  'llama-3.3-70b-versatile',
+  'llama-3.1-8b-instant',
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'gemma2-9b-it'
+];
+let _modeloBom = null;
+let ULTIMO_ERRO_IA = null;
+
 async function chamarGroq(sistema, msgs) {
-  try {
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + GROQ_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'system', content: sistema }, ...msgs],
-        temperature: 0.6, max_tokens: 300 })
-    });
-    if (!r.ok) { console.log('groq falhou:', r.status); return null; }
-    const d = await r.json();
-    return d.choices?.[0]?.message?.content?.trim() || null;
-  } catch (e) { console.log('groq erro:', e.message); return null; }
+  const tentar = _modeloBom ? [_modeloBom, ...MODELOS_GROQ] : MODELOS_GROQ;
+  for (const modelo of tentar) {
+    try {
+      const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + GROQ_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelo,
+          messages: [{ role: 'system', content: sistema }, ...msgs],
+          temperature: 0.6, max_tokens: 300 })
+      });
+      const txt = await r.text();
+      if (!r.ok) {
+        ULTIMO_ERRO_IA = modelo + ' -> ' + r.status + ' ' + txt.slice(0, 200);
+        console.log('[IA] groq falhou:', ULTIMO_ERRO_IA);
+        continue;
+      }
+      const d = JSON.parse(txt);
+      const resp = d.choices?.[0]?.message?.content?.trim();
+      if (resp) {
+        if (_modeloBom !== modelo) { _modeloBom = modelo; console.log('[IA] usando modelo', modelo); }
+        ULTIMO_ERRO_IA = null;
+        return resp;
+      }
+      ULTIMO_ERRO_IA = modelo + ' -> resposta vazia';
+    } catch (e) {
+      ULTIMO_ERRO_IA = modelo + ' -> ' + e.message;
+      console.log('[IA] groq erro:', e.message);
+    }
+  }
+  return null;
 }
+
+/* teste da IA pelo navegador */
+app.get('/testeia', async (req, res) => {
+  const pergunta = req.query.q || 'oi';
+  const loja = req.query.loja || Object.keys(sessoes)[0] || 'suc_sfs';
+  try {
+    const cfg = await buscarCfg(loja);
+    const link = cfg?.link_cardapio || 'https://rafaeluendes-jpg.github.io/delivery/';
+    const nome = cfg?.nome_loja || 'a loja';
+    const inicio = Date.now();
+    const r = await responderComIA(pergunta, '__teste__', cfg, link, nome, true);
+    res.json({
+      pergunta,
+      loja,
+      configuracao: {
+        ia_ativa: cfg?.ia_ativa !== false,
+        nome_assistente: cfg?.ia_nome || '(sem nome)',
+        tem_regras: !!(cfg?.ia_regras || '').trim()
+      },
+      chaves: { groq: !!GROQ_KEY, gemini: !!GEMINI_KEY },
+      modelo: _modeloBom || '(nenhum funcionou)',
+      resposta: r || null,
+      erro: r ? null : (ULTIMO_ERRO_IA || 'sem detalhe'),
+      levou: (Date.now() - inicio) + 'ms'
+    });
+  } catch (e) { res.json({ erro: e.message }); }
+});
 async function chamarGemini(sistema, msgs) {
   try {
     const conteudo = msgs.map(m => ({

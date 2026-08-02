@@ -257,6 +257,11 @@ async function montarResposta(lojaId, tel, texto) {
   /* respostas de fábrica */
   if (/(card[aá]pio|menu|pedir|pedido|comprar|link)/.test(t))
     return `Claro! Faça seu pedido por aqui:\n${link}\n\nÉ só escolher os sabores e enviar. O pedido cai direto no nosso sistema.`;
+  /* sabores: zero açúcar, lançamentos ou todos */
+  if (/(sabor|sabores|qual tem|que tem hoje|tem hoje|zero|diet|sem acucar|sem açúcar|diabetic|lancamento|lançamento|novidade)/.test(t)) {
+    const resp = await responderSabores(t, link);
+    if (resp) return resp;
+  }
   if (/(hor[aá]rio|aberto|fecha|funciona)/.test(t))
     return cfg?.texto_horario || 'Estamos abertos de terça a domingo, das 14h às 22h30. Segunda é nosso dia de folga.';
   /* o cliente citou um bairro ou cidade? responde com a taxa real */
@@ -322,6 +327,45 @@ async function acharZona(texto) {
     if (rural) return rural;
   }
   return null;
+}
+/* sabores disponíveis, lidos das fichas técnicas */
+let _saboresCache = { quando: 0, lista: [] };
+async function carregarSabores() {
+  if (!sb) return [];
+  if (Date.now() - _saboresCache.quando < 3 * 60 * 1000) return _saboresCache.lista;
+  try {
+    const { data } = await sb.from('fichas_tecnicas')
+      .select('nome, zero_acucar, disponivel_hoje, lancamento')
+      .eq('disponivel_hoje', true)
+      .order('nome');
+    const lista = (data || []).filter(f => /^(?!.*(massa|base)).*$/i.test(f.nome));
+    _saboresCache = { quando: Date.now(), lista };
+    return lista;
+  } catch (e) { return []; }
+}
+async function responderSabores(t, link) {
+  const sabores = await carregarSabores();
+  if (!sabores.length) return null;
+  const zero = sabores.filter(s => s.zero_acucar);
+  const normais = sabores.filter(s => !s.zero_acucar && !s.lancamento);
+  const novos = sabores.filter(s => s.lancamento);
+  const lista = arr => arr.map(s => '• ' + s.nome).join('\n');
+
+  if (/(zero|diet|sem acucar|sem açúcar|diabetic)/.test(t)) {
+    if (!zero.length) return 'Hoje não temos sabores zero açúcar disponíveis 😔\n\nMas amanhã pode ter! Dá uma olhada no cardápio:\n' + link;
+    return 'Nossos *zero açúcar* de hoje 🍨\n\n' + lista(zero) +
+      '\n\nTodos sem açúcar adicionado — bom para quem controla.\n\nPeça aqui:\n' + link;
+  }
+  if (/(lancamento|lançamento|novidade|novo)/.test(t)) {
+    if (!novos.length) return null;
+    return 'Nossos *lançamentos* ✨\n\n' + lista(novos) +
+      '\n\nVale provar! Peça aqui:\n' + link;
+  }
+  let r = '*Sabores de hoje* 🍨\n\n' + lista(normais);
+  if (novos.length) r += '\n\n*Lançamentos* ✨\n' + lista(novos);
+  if (zero.length) r += '\n\n*Zero açúcar*\n' + lista(zero);
+  r += '\n\nOs sabores mudam conforme a produção do dia.\n\nPeça aqui:\n' + link;
+  return r;
 }
 async function buscarCfg(lojaId) {
   if (!sb) return {};

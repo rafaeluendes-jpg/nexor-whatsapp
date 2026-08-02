@@ -234,11 +234,45 @@ async function limparSessaoBanco(lojaId) {
 /* ---------- respostas automáticas ---------- */
 const memoria = {};   /* telefone -> ultimo atendimento */
 
+/* tira acento, pontuação e espaço extra — o cliente escreve como quer */
+function limpar(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[?!.,;:()\[\]{}'"]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+/* aceita erro de uma letra em palavras de 5+ caracteres */
+function pareceCom(palavra, alvo) {
+  if (palavra === alvo) return true;
+  if (alvo.length < 5) return false;
+  if (Math.abs(palavra.length - alvo.length) > 1) return false;
+  let i = 0, j = 0, erros = 0;
+  while (i < palavra.length && j < alvo.length) {
+    if (palavra[i] === alvo[j]) { i++; j++; continue; }
+    if (++erros > 1) return false;
+    if (palavra.length > alvo.length) i++;
+    else if (palavra.length < alvo.length) j++;
+    else { i++; j++; }
+  }
+  return true;
+}
+function contem(texto, termos) {
+  const palavras = texto.split(' ');
+  return termos.some(termo => {
+    const t = limpar(termo);
+    if (!t) return false;
+    if (t.includes(' ')) return texto.includes(t);          /* expressão */
+    if (texto.includes(t)) return true;                     /* pedaço */
+    return palavras.some(p => pareceCom(p, t));             /* erro de digitação */
+  });
+}
 async function montarResposta(lojaId, tel, texto) {
   const cfg = await buscarCfg(lojaId);
   if (cfg?.robo_ativo === false) return null;
 
-  const t = texto.toLowerCase();
+  const t = limpar(texto);
   const agora = Date.now();
   const ultima = memoria[tel] || 0;
   const primeiraVez = (agora - ultima) > 3 * 60 * 60 * 1000;   /* 3 horas */
@@ -249,20 +283,25 @@ async function montarResposta(lojaId, tel, texto) {
 
   /* palavras-chave configuradas pela loja */
   for (const r of (cfg?.respostas || [])) {
-    const chaves = String(r.chaves || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
-    if (chaves.some(c => t.includes(c))) {
-      return String(r.resposta || '').replace('{link}', link).replace('{loja}', nome);
+    const chaves = String(r.chaves || '').split(',').map(x => x.trim()).filter(Boolean);
+    if (contem(t, chaves)) {
+      return String(r.resposta || '')
+        .replace(/\{link\}/g, link).replace(/\{loja\}/g, nome);
     }
   }
   /* respostas de fábrica */
-  if (/(card[aá]pio|menu|pedir|pedido|comprar|link)/.test(t))
+  if (contem(t, ['cardapio','menu','pedir','pedido','comprar','link','quero','fazer pedido',
+      'como peco','como faco','site','delivery']))
     return `Claro! Faça seu pedido por aqui:\n${link}\n\nÉ só escolher os sabores e enviar. O pedido cai direto no nosso sistema.`;
   /* sabores: zero açúcar, lançamentos ou todos */
-  if (/(sabor|sabores|qual tem|que tem hoje|tem hoje|zero|diet|sem acucar|sem açúcar|diabetic|lancamento|lançamento|novidade)/.test(t)) {
+  if (contem(t, ['sabor','sabores','qual tem','que tem','tem hoje','disponivel','disponiveis',
+      'zero','diet','sem acucar','diabetico','diabetes','light','lancamento','novidade',
+      'novo sabor','cardapio de sabores','tem de que'])) {
     const resp = await responderSabores(t, link);
     if (resp) return resp;
   }
-  if (/(hor[aá]rio|aberto|fecha|funciona)/.test(t))
+  if (contem(t, ['horario','aberto','abre','fecha','fechado','funciona','funcionamento',
+      'que horas','ta aberto','esta aberto','atende']))
     return cfg?.texto_horario || 'Estamos abertos de terça a domingo, das 14h às 22h30. Segunda é nosso dia de folga.';
   /* o cliente citou um bairro ou cidade? responde com a taxa real */
   const zona = await acharZona(t);
@@ -273,13 +312,16 @@ async function montarResposta(lojaId, tel, texto) {
       (zona.obs ? `\n_${zona.obs}_` : '') +
       `\n\nMonte seu pedido aqui:\n${link}`;
   }
-  if (/(taxa|entrega|frete|entregam)/.test(t))
+  if (contem(t, ['taxa','entrega','frete','entregam','entregar','delivery','leva',
+      'quanto fica a entrega','cobra quanto']))
     return cfg?.texto_entrega || `A taxa varia pelo bairro. Ao montar o pedido em ${link} você escolhe sua região e vê o valor exato.`;
-  if (/(pix|pagamento|pagar|cart[aã]o|dinheiro)/.test(t))
+  if (contem(t, ['pix','pagamento','pagar','cartao','dinheiro','debito','credito',
+      'forma de pagamento','aceita cartao','maquininha']))
     return cfg?.texto_pagamento || 'Aceitamos dinheiro, Pix, débito e crédito. O pagamento é feito na entrega.';
-  if (/(onde|endere[cç]o|fica|localiza)/.test(t))
+  if (contem(t, ['onde','endereco','fica','localiza','local','rua','como chego','fica aonde']))
     return cfg?.texto_endereco || 'Estamos esperando você! Nosso endereço está no cardápio.';
-  if (/(ol[aá]|oi|bom dia|boa tarde|boa noite|tudo bem)/.test(t) || primeiraVez)
+  if (contem(t, ['ola','oi','opa','eai','bom dia','boa tarde','boa noite','tudo bem',
+      'boa','alo','bom']) || primeiraVez)
     return cfg?.saudacao ||
       `Olá! 👋 Bem-vindo a ${nome}.\n\nFaça seu pedido por aqui:\n${link}\n\nSe precisar, é só chamar.`;
   return null;
@@ -312,7 +354,7 @@ async function carregarZonas() {
   } catch (e) { return []; }
 }
 async function acharZona(texto) {
-  const t = semAcento(texto);
+  const t = limpar(texto);
   const zonas = await carregarZonas();
   /* casa pelo nome mais longo primeiro, para "jardim america" ganhar de "jardim" */
   const ordenadas = zonas.slice().sort((a, b) => String(b.nome).length - String(a.nome).length);
@@ -322,7 +364,7 @@ async function acharZona(texto) {
     if (t.includes(n)) return z;
   }
   /* palavras genéricas de zona rural */
-  if (/(sitio|chacara|rancho|fazenda|estrada|zona rural)/.test(t)) {
+  if (contem(t, ['sitio','chacara','rancho','fazenda','estrada','zona rural','interior','roca'])) {
     const rural = zonas.find(z => z.tipo === 'rural');
     if (rural) return rural;
   }
@@ -351,12 +393,12 @@ async function responderSabores(t, link) {
   const novos = sabores.filter(s => s.lancamento);
   const lista = arr => arr.map(s => '• ' + s.nome).join('\n');
 
-  if (/(zero|diet|sem acucar|sem açúcar|diabetic)/.test(t)) {
+  if (contem(t, ['zero','diet','sem acucar','diabetico','diabetes','light'])) {
     if (!zero.length) return 'Hoje não temos sabores zero açúcar disponíveis 😔\n\nMas amanhã pode ter! Dá uma olhada no cardápio:\n' + link;
     return 'Nossos *zero açúcar* de hoje 🍨\n\n' + lista(zero) +
       '\n\nTodos sem açúcar adicionado — bom para quem controla.\n\nPeça aqui:\n' + link;
   }
-  if (/(lancamento|lançamento|novidade|novo)/.test(t)) {
+  if (contem(t, ['lancamento','novidade','novo','nova','recente'])) {
     if (!novos.length) return null;
     return 'Nossos *lançamentos* ✨\n\n' + lista(novos) +
       '\n\nVale provar! Peça aqui:\n' + link;

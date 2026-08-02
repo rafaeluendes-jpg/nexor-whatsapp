@@ -340,6 +340,195 @@ async function respostaPronta(t, cfg, link, nome, primeiraVez) {
   return null;
 }
 
+
+/* zonas de entrega, lidas do sistema */
+let _zonasCache = { quando: 0, lista: [] };
+async function carregarZonas() {
+  if (!sb) return [];
+  if (Date.now() - _zonasCache.quando < 5 * 60 * 1000) return _zonasCache.lista;
+  try {
+    const { data } = await sb.from('areas_entrega').select('*, areas_zonas(*)');
+    const lista = [];
+    (data || []).forEach(a => {
+      lista.push({ nome: a.nome, taxa: a.taxa_padrao, tempo: a.tempo,
+        cidade: a.nome, tipo: 'cidade' });
+      (a.areas_zonas || []).forEach(z => {
+        if (z.ativa === false) return;
+        lista.push({ nome: z.nome, taxa: z.taxa, tempo: z.tempo,
+          obs: z.observacao, cidade: a.nome, tipo: z.tipo });
+      });
+    });
+    _zonasCache = { quando: Date.now(), lista };
+    return lista;
+  } catch (e) { return []; }
+}
+async function acharZona(texto) {
+  const t = limpar(texto);
+  const zonas = await carregarZonas();
+  const ordenadas = zonas.slice().sort((a, b) => String(b.nome).length - String(a.nome).length);
+  for (const z of ordenadas) {
+    const n = limpar(z.nome);
+    if (n.length < 4) continue;
+    if (t.includes(n)) return z;
+  }
+  if (contem(t, ['sitio','chacara','rancho','fazenda','estrada','zona rural','interior','roca'])) {
+    const rural = zonas.find(z => z.tipo === 'rural');
+    if (rural) return rural;
+  }
+  return null;
+}
+function dinheiro(v) { return (Number(v) || 0).toFixed(2).replace('.', ','); }
+
+/* ==========================================================
+   IA — a atendente virtual
+   ========================================================== */
+const historico = {};
+const TONS = {
+  acolhedor: 'acolhedor e caloroso, como um atendente simpático de loja de bairro',
+  direto:    'direto e objetivo, sem rodeios, resolvendo rápido',
+  animado:   'animado e descontraído, com energia, mas sem exagero',
+  formal:    'cordial e respeitoso, um pouco mais formal'
+};
+
+/* sabores disponíveis, lidos das fichas técnicas */
+let _saboresCache = { quando: 0, lista: [] };
+async function carregarSabores() {
+  if (!sb) return [];
+  if (Date.now() - _saboresCache.quando < 3 * 60 * 1000) return _saboresCache.lista;
+  try {
+    const { data } = await sb.from('fichas_tecnicas')
+      .select('nome, zero_acucar, disponivel_hoje, lancamento')
+      .eq('disponivel_hoje', true).order('nome');
+    const lista = (data || []).filter(f => !/massa|base/i.test(f.nome || ''));
+    _saboresCache = { quando: Date.now(), lista };
+    return lista;
+  } catch (e) { return []; }
+}
+async function responderSabores(t, link) {
+  const sabores = await carregarSabores();
+  if (!sabores.length) return null;
+  const zero   = sabores.filter(s => s.zero_acucar);
+  const normais= sabores.filter(s => !s.zero_acucar && !s.lancamento);
+  const novos  = sabores.filter(s => s.lancamento);
+  const lista  = arr => arr.map(s => '• ' + s.nome).join('\n');
+
+  if (contem(t, ['zero','diet','sem acucar','diabetico','diabetes','light'])) {
+    if (!zero.length) return 'Hoje não temos sabores zero açúcar 😔\n\nVeja o cardápio:\n' + link;
+    return 'Nossos *zero açúcar* de hoje 🍨\n\n' + lista(zero) +
+      '\n\nPeça aqui:\n' + link;
+  }
+  if (contem(t, ['lancamento','novidade','novo','nova','recente'])) {
+    if (!novos.length) return null;
+    return 'Nossos *lançamentos* ✨\n\n' + lista(novos) + '\n\nPeça aqui:\n' + link;
+  }
+  let r = '*Sabores de hoje* 🍨\n\n' + lista(normais);
+  if (novos.length) r += '\n\n*Lançamentos* ✨\n' + lista(novos);
+  if (zero.length)  r += '\n\n*Zero açúcar*\n' + lista(zero);
+  return r + '\n\nOs sabores mudam conforme a produção do dia.\n\nPeça aqui:\n' + link;
+}
+
+async function montarContexto(cfg, link, nome, primeiraVez) {
+  const sabores = await carregarSabores();
+  const zonas   = await carregarZonas();
+  const zonaTxt = zonas.filter(z => z.tipo !== 'padrao')
+    .map(z => `${z.nome} (${z.cidade}): R$ ${dinheiro(z.taxa)}`).join('; ');
+  const norm  = sabores.filter(s => !s.zero_acucar && !s.lancamento).map(s => s.nome);
+  const zero  = sabores.filter(s => s.zero_acucar).map(s => s.nome);
+  const novos = sabores.filter(s => s.lancamento).map(s => s.nome);
+
+  const iaNome = (cfg?.ia_nome || '').trim();
+  const tom = TONS[cfg?.ia_tom] || TONS.acolhedor;
+  const regras = (cfg?.ia_regras || '').trim();
+  const apresenta = cfg?.ia_apresenta !== false;
+
+  const prontas = [
+    cfg?.texto_horario   ? 'Horário: '   + cfg.texto_horario.replace(/\n/g,' ')   : '',
+    cfg?.texto_entrega   ? 'Entrega: '   + cfg.texto_entrega.replace(/\n/g,' ')   : '',
+    cfg?.texto_pagamento ? 'Pagamento: ' + cfg.texto_pagamento.replace(/\n/g,' ') : '',
+    cfg?.texto_endereco  ? 'Endereço: '  + cfg.texto_endereco.replace(/\n/g,' ')  : '',
+    ...(cfg?.respostas || []).map(r => r.chaves
+      ? `Sobre "${r.chaves}": ${String(r.resposta||'').replace(/\n/g,' ')}` : '')
+  ].filter(Boolean).join('\n');
+
+  return `Você é ${iaNome ? iaNome + ', a atendente virtual' : 'o atendente virtual'} da ${nome}, uma gelateria artesanal.
+${iaNome && apresenta && primeiraVez
+  ? `ESTA É A PRIMEIRA MENSAGEM da conversa: comece se apresentando, algo como "Oi! Aqui é a ${iaNome}, da ${nome}" — e só depois responda o que a pessoa perguntou.`
+  : (iaNome && apresenta ? 'A conversa já começou; não se apresente de novo.' : '')}
+Seu jeito de falar é ${tom}.
+
+INFORMAÇÕES REAIS DE HOJE (use apenas estas, nunca invente):
+- Link do cardápio: ${link}
+- Horário: ${(cfg?.texto_horario || 'todos os dias das 12h às 23h').replace(/\n/g, ' ')}
+- Endereço: ${(cfg?.texto_endereco || 'informar pelo cardápio').replace(/\n/g, ' ')}
+- Pagamento: dinheiro, Pix, débito e crédito, pagos na entrega
+- Sabores tradicionais: ${norm.join(', ') || 'consultar no cardápio'}
+- Zero açúcar: ${zero.join(', ') || 'nenhum hoje'}
+- Lançamentos: ${novos.join(', ') || 'nenhum'}
+- Taxas de entrega: ${zonaTxt || 'variam por bairro'}
+${prontas ? `\nRESPOSTAS QUE A LOJA DEIXOU PRONTAS (use o conteúdo, com suas palavras):\n${prontas}` : ''}
+${regras ? `\nREGRAS DA LOJA (siga sempre):\n${regras}\n` : ''}
+COMO RESPONDER:
+- Português do Brasil, no máximo 3 frases curtas. Nada de textão.
+- Um emoji, no máximo dois.
+- Quando fizer sentido, mande o link do cardápio.
+- NUNCA invente sabor, preço, taxa ou promoção. Se não souber, diga que vai
+  confirmar com a equipe e peça um instante.
+- Para cancelamento ou reclamação, peça o número do pedido e avise que a equipe verifica.
+
+CONVERSA NATURAL:
+- Pode conversar de forma leve sobre o que a pessoa trouxer: o calor, o fim de
+  semana, um agradecimento, uma brincadeira. Responda como uma pessoa responderia.
+- Depois, puxe de volta para a loja sem forçar. Ex.: "Aqui também tá um calor
+  danado! Dia perfeito pra um gelato 🍨"
+- Evite política, religião, futebol de time e saúde de alguém: desconverse com
+  leveza e volte para o pedido.
+- Nunca dê conselho médico, jurídico ou financeiro.`;
+}
+
+async function responderComIA(mensagem, tel, cfg, link, nome, primeiraVez) {
+  const sistema = await montarContexto(cfg, link, nome, primeiraVez);
+  historico[tel] = (historico[tel] || []).slice(-6);
+  const msgs = [...historico[tel], { role: 'user', content: mensagem }];
+
+  let resposta = null;
+  if (GROQ_KEY) resposta = await chamarGroq(sistema, msgs);
+  if (!resposta && GEMINI_KEY) resposta = await chamarGemini(sistema, msgs);
+  if (!resposta) { console.log('IA nao respondeu — usando respostas prontas'); return null; }
+
+  historico[tel] = [...msgs, { role: 'assistant', content: resposta }].slice(-6);
+  return resposta;
+}
+async function chamarGroq(sistema, msgs) {
+  try {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + GROQ_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'system', content: sistema }, ...msgs],
+        temperature: 0.6, max_tokens: 300 })
+    });
+    if (!r.ok) { console.log('groq falhou:', r.status); return null; }
+    const d = await r.json();
+    return d.choices?.[0]?.message?.content?.trim() || null;
+  } catch (e) { console.log('groq erro:', e.message); return null; }
+}
+async function chamarGemini(sistema, msgs) {
+  try {
+    const conteudo = msgs.map(m => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }] }));
+    const r = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + GEMINI_KEY,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ systemInstruction: { parts: [{ text: sistema }] },
+          contents: conteudo,
+          generationConfig: { temperature: 0.6, maxOutputTokens: 300 } }) });
+    if (!r.ok) { console.log('gemini falhou:', r.status); return null; }
+    const d = await r.json();
+    return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+  } catch (e) { console.log('gemini erro:', e.message); return null; }
+}
+
 async function buscarCfg(lojaId) {
   if (!sb) return {};
   try {

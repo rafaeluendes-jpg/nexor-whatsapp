@@ -343,6 +343,12 @@ async function montarResposta(lojaId, tel, texto) {
    ========================================================== */
 const historico = {};   /* telefone -> últimas mensagens */
 
+var TONS = {
+  acolhedor: 'acolhedor e caloroso, como um atendente simpático de loja de bairro',
+  direto:    'direto e objetivo, sem rodeios, resolvendo rápido',
+  animado:   'animado e descontraído, com energia, mas sem exagero',
+  formal:    'cordial e respeitoso, um pouco mais formal'
+};
 async function montarContexto(cfg, link, nome) {
   const sabores = await carregarSabores();
   const zonas   = await carregarZonas();
@@ -352,7 +358,15 @@ async function montarContexto(cfg, link, nome) {
   const zero  = sabores.filter(s => s.zero_acucar).map(s => s.nome);
   const novos = sabores.filter(s => s.lancamento).map(s => s.nome);
 
-  return `Você é o atendente virtual da ${nome}, uma gelateria artesanal.
+  const iaNome = (cfg?.ia_nome || '').trim();
+  const tom = TONS[cfg?.ia_tom] || TONS.acolhedor;
+  const regras = (cfg?.ia_regras || '').trim();
+  const apresenta = cfg?.ia_apresenta !== false;
+
+  return `Você é ${iaNome ? iaNome + ', a atendente virtual' : 'o atendente virtual'} da ${nome}, uma gelateria artesanal.
+${iaNome && apresenta ? `Quando cumprimentar alguém pela primeira vez, diga seu nome: "Oi! Aqui é a ${iaNome}, da ${nome}".` : ''}
+Seu jeito de falar é ${tom}.
+${regras ? `\nREGRAS DA LOJA (siga sempre):\n${regras}\n` : ''}
 
 INFORMAÇÕES REAIS DE HOJE (use apenas estas, nunca invente):
 - Link do cardápio: ${link}

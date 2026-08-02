@@ -286,7 +286,18 @@ async function montarResposta(lojaId, tel, texto) {
   const link = cfg?.link_cardapio || 'https://rafaeluendes-jpg.github.io/delivery/';
   const nome = cfg?.nome_loja || 'nossa loja';
 
-  /* palavras-chave configuradas pela loja */
+  /* 1) a atendente virtual responde primeiro */
+  if (cfg?.ia_ativa !== false && (GROQ_KEY || GEMINI_KEY)) {
+    const r = await responderComIA(texto, tel, cfg, link, nome, primeiraVez);
+    if (r) return r;
+  }
+
+  /* 2) sem IA disponível: as respostas prontas assumem */
+  return respostaPronta(t, cfg, link, nome, primeiraVez);
+}
+
+/* respostas fixas — apoio quando a IA não responde */
+async function respostaPronta(t, cfg, link, nome, primeiraVez) {
   for (const r of (cfg?.respostas || [])) {
     const chaves = String(r.chaves || '').split(',').map(x => x.trim()).filter(Boolean);
     if (contem(t, chaves)) {
@@ -294,21 +305,12 @@ async function montarResposta(lojaId, tel, texto) {
         .replace(/\{link\}/g, link).replace(/\{loja\}/g, nome);
     }
   }
-  /* respostas de fábrica */
-  if (contem(t, ['cardapio','menu','pedir','pedido','comprar','link','quero','fazer pedido',
-      'como peco','como faco','site','delivery']))
-    return `Claro! Faça seu pedido por aqui:\n${link}\n\nÉ só escolher os sabores e enviar. O pedido cai direto no nosso sistema.`;
-  /* sabores: zero açúcar, lançamentos ou todos */
   if (contem(t, ['sabor','sabores','qual tem','que tem','tem hoje','disponivel','disponiveis',
       'zero','diet','sem acucar','diabetico','diabetes','light','lancamento','novidade',
       'novo sabor','cardapio de sabores','tem de que'])) {
     const resp = await responderSabores(t, link);
     if (resp) return resp;
   }
-  if (contem(t, ['horario','aberto','abre','fecha','fechado','funciona','funcionamento',
-      'que horas','ta aberto','esta aberto','atende']))
-    return cfg?.texto_horario || 'Estamos abertos de terça a domingo, das 14h às 22h30. Segunda é nosso dia de folga.';
-  /* o cliente citou um bairro ou cidade? responde com a taxa real */
   const zona = await acharZona(t);
   if (zona) {
     return `Entrega em *${zona.nome}* 🛵\n\n` +
@@ -317,6 +319,12 @@ async function montarResposta(lojaId, tel, texto) {
       (zona.obs ? `\n_${zona.obs}_` : '') +
       `\n\nMonte seu pedido aqui:\n${link}`;
   }
+  if (contem(t, ['cardapio','menu','pedir','pedido','comprar','link','quero','fazer pedido',
+      'como peco','como faco','site','delivery']))
+    return `Claro! Faça seu pedido por aqui:\n${link}\n\nÉ só escolher os sabores e enviar. O pedido cai direto no nosso sistema.`;
+  if (contem(t, ['horario','aberto','abre','fecha','fechado','funciona','funcionamento',
+      'que horas','ta aberto','esta aberto','atende']))
+    return cfg?.texto_horario || 'Estamos abertos todos os dias, das 12h às 23h.';
   if (contem(t, ['taxa','entrega','frete','entregam','entregar','delivery','leva',
       'quanto fica a entrega','cobra quanto']))
     return cfg?.texto_entrega || `A taxa varia pelo bairro. Ao montar o pedido em ${link} você escolhe sua região e vê o valor exato.`;
@@ -329,200 +337,9 @@ async function montarResposta(lojaId, tel, texto) {
       'boa','alo','bom']) || primeiraVez)
     return cfg?.saudacao ||
       `Olá! 👋 Bem-vindo a ${nome}.\n\nFaça seu pedido por aqui:\n${link}\n\nSe precisar, é só chamar.`;
-
-  /* nada das respostas prontas serviu: pergunta para a IA */
-  if (cfg?.ia_ativa !== false && (GROQ_KEY || GEMINI_KEY)) {
-    const r = await responderComIA(texto, tel, cfg, link, nome);
-    if (r) return r;
-  }
   return null;
 }
 
-/* ==========================================================
-   IA — responde o que as respostas prontas não cobrem
-   ========================================================== */
-const historico = {};   /* telefone -> últimas mensagens */
-
-var TONS = {
-  acolhedor: 'acolhedor e caloroso, como um atendente simpático de loja de bairro',
-  direto:    'direto e objetivo, sem rodeios, resolvendo rápido',
-  animado:   'animado e descontraído, com energia, mas sem exagero',
-  formal:    'cordial e respeitoso, um pouco mais formal'
-};
-async function montarContexto(cfg, link, nome) {
-  const sabores = await carregarSabores();
-  const zonas   = await carregarZonas();
-  const zonaTxt = zonas.filter(z => z.tipo !== 'padrao')
-    .map(z => `${z.nome} (${z.cidade}): R$ ${dinheiro(z.taxa)}`).join('; ');
-  const norm  = sabores.filter(s => !s.zero_acucar && !s.lancamento).map(s => s.nome);
-  const zero  = sabores.filter(s => s.zero_acucar).map(s => s.nome);
-  const novos = sabores.filter(s => s.lancamento).map(s => s.nome);
-
-  const iaNome = (cfg?.ia_nome || '').trim();
-  const tom = TONS[cfg?.ia_tom] || TONS.acolhedor;
-  const regras = (cfg?.ia_regras || '').trim();
-  const apresenta = cfg?.ia_apresenta !== false;
-
-  return `Você é ${iaNome ? iaNome + ', a atendente virtual' : 'o atendente virtual'} da ${nome}, uma gelateria artesanal.
-${iaNome && apresenta ? `Quando cumprimentar alguém pela primeira vez, diga seu nome: "Oi! Aqui é a ${iaNome}, da ${nome}".` : ''}
-Seu jeito de falar é ${tom}.
-${regras ? `\nREGRAS DA LOJA (siga sempre):\n${regras}\n` : ''}
-
-INFORMAÇÕES REAIS DE HOJE (use apenas estas, nunca invente):
-- Link do cardápio: ${link}
-- Horário: ${(cfg?.texto_horario || 'todos os dias das 12h às 23h').replace(/\n/g, ' ')}
-- Endereço: ${(cfg?.texto_endereco || 'informar pelo cardápio').replace(/\n/g, ' ')}
-- Pagamento: dinheiro, Pix, débito e crédito, pagos na entrega
-- Sabores tradicionais: ${norm.join(', ') || 'consultar no cardápio'}
-- Zero açúcar: ${zero.join(', ') || 'nenhum hoje'}
-- Lançamentos: ${novos.join(', ') || 'nenhum'}
-- Taxas de entrega: ${zonaTxt || 'variam por bairro, informar no cardápio'}
-
-COMO RESPONDER:
-- Português do Brasil, tom acolhedor e direto, como um atendente de loja de bairro
-- No máximo 3 frases curtas. Nada de textão.
-- Pode usar um emoji, no máximo dois
-- Quando fizer sentido, mande o link do cardápio
-- Se perguntarem algo que não está acima, diga com sinceridade que vai confirmar
-  com a equipe e peça um instante. NUNCA invente sabor, preço, taxa ou promoção.
-- Se o cliente quiser cancelar ou reclamar de um pedido, peça o número do pedido
-  e avise que a equipe vai verificar.
-- Não fale de assuntos fora da gelateria.`;
-}
-
-async function responderComIA(mensagem, tel, cfg, link, nome) {
-  const sistema = await montarContexto(cfg, link, nome);
-  historico[tel] = (historico[tel] || []).slice(-6);
-  const msgs = [...historico[tel], { role: 'user', content: mensagem }];
-
-  let resposta = null;
-  if (GROQ_KEY)   resposta = await chamarGroq(sistema, msgs);
-  if (!resposta && GEMINI_KEY) resposta = await chamarGemini(sistema, msgs);
-  if (!resposta) return null;
-
-  historico[tel] = [...msgs, { role: 'assistant', content: resposta }].slice(-6);
-  return resposta;
-}
-
-async function chamarGroq(sistema, msgs) {
-  try {
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + GROQ_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'system', content: sistema }, ...msgs],
-        temperature: 0.5, max_tokens: 300
-      })
-    });
-    if (!r.ok) { console.log('groq falhou:', r.status); return null; }
-    const d = await r.json();
-    return d.choices?.[0]?.message?.content?.trim() || null;
-  } catch (e) { console.log('groq erro:', e.message); return null; }
-}
-
-async function chamarGemini(sistema, msgs) {
-  try {
-    const conteudo = msgs.map(m => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }]
-    }));
-    const r = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + GEMINI_KEY,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: sistema }] },
-          contents: conteudo,
-          generationConfig: { temperature: 0.5, maxOutputTokens: 300 }
-        }) });
-    if (!r.ok) { console.log('gemini falhou:', r.status); return null; }
-    const d = await r.json();
-    return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
-  } catch (e) { console.log('gemini erro:', e.message); return null; }
-}
-
-function dinheiro(v){
-  return (Number(v)||0).toFixed(2).replace('.', ',');
-}
-function semAcento(s){
-  return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
-}
-/* procura o bairro ou a cidade que o cliente citou */
-let _zonasCache = { quando: 0, lista: [] };
-async function carregarZonas() {
-  if (!sb) return [];
-  if (Date.now() - _zonasCache.quando < 5 * 60 * 1000) return _zonasCache.lista;
-  try {
-    const { data } = await sb.from('areas_entrega').select('*, areas_zonas(*)');
-    const lista = [];
-    (data || []).forEach(a => {
-      lista.push({ nome: a.nome, taxa: a.taxa_padrao, tempo: a.tempo, cidade: a.nome, tipo: 'cidade' });
-      (a.areas_zonas || []).forEach(z => {
-        if (z.ativa === false) return;
-        lista.push({ nome: z.nome, taxa: z.taxa, tempo: z.tempo, obs: z.observacao,
-          cidade: a.nome, tipo: z.tipo });
-      });
-    });
-    _zonasCache = { quando: Date.now(), lista };
-    return lista;
-  } catch (e) { return []; }
-}
-async function acharZona(texto) {
-  const t = limpar(texto);
-  const zonas = await carregarZonas();
-  /* casa pelo nome mais longo primeiro, para "jardim america" ganhar de "jardim" */
-  const ordenadas = zonas.slice().sort((a, b) => String(b.nome).length - String(a.nome).length);
-  for (const z of ordenadas) {
-    const n = semAcento(z.nome);
-    if (n.length < 4) continue;
-    if (t.includes(n)) return z;
-  }
-  /* palavras genéricas de zona rural */
-  if (contem(t, ['sitio','chacara','rancho','fazenda','estrada','zona rural','interior','roca'])) {
-    const rural = zonas.find(z => z.tipo === 'rural');
-    if (rural) return rural;
-  }
-  return null;
-}
-/* sabores disponíveis, lidos das fichas técnicas */
-let _saboresCache = { quando: 0, lista: [] };
-async function carregarSabores() {
-  if (!sb) return [];
-  if (Date.now() - _saboresCache.quando < 3 * 60 * 1000) return _saboresCache.lista;
-  try {
-    const { data } = await sb.from('fichas_tecnicas')
-      .select('nome, zero_acucar, disponivel_hoje, lancamento')
-      .eq('disponivel_hoje', true)
-      .order('nome');
-    const lista = (data || []).filter(f => /^(?!.*(massa|base)).*$/i.test(f.nome));
-    _saboresCache = { quando: Date.now(), lista };
-    return lista;
-  } catch (e) { return []; }
-}
-async function responderSabores(t, link) {
-  const sabores = await carregarSabores();
-  if (!sabores.length) return null;
-  const zero = sabores.filter(s => s.zero_acucar);
-  const normais = sabores.filter(s => !s.zero_acucar && !s.lancamento);
-  const novos = sabores.filter(s => s.lancamento);
-  const lista = arr => arr.map(s => '• ' + s.nome).join('\n');
-
-  if (contem(t, ['zero','diet','sem acucar','diabetico','diabetes','light'])) {
-    if (!zero.length) return 'Hoje não temos sabores zero açúcar disponíveis 😔\n\nMas amanhã pode ter! Dá uma olhada no cardápio:\n' + link;
-    return 'Nossos *zero açúcar* de hoje 🍨\n\n' + lista(zero) +
-      '\n\nTodos sem açúcar adicionado — bom para quem controla.\n\nPeça aqui:\n' + link;
-  }
-  if (contem(t, ['lancamento','novidade','novo','nova','recente'])) {
-    if (!novos.length) return null;
-    return 'Nossos *lançamentos* ✨\n\n' + lista(novos) +
-      '\n\nVale provar! Peça aqui:\n' + link;
-  }
-  let r = '*Sabores de hoje* 🍨\n\n' + lista(normais);
-  if (novos.length) r += '\n\n*Lançamentos* ✨\n' + lista(novos);
-  if (zero.length) r += '\n\n*Zero açúcar*\n' + lista(zero);
-  r += '\n\nOs sabores mudam conforme a produção do dia.\n\nPeça aqui:\n' + link;
-  return r;
-}
 async function buscarCfg(lojaId) {
   if (!sb) return {};
   try {

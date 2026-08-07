@@ -609,7 +609,11 @@ async function cobrarRotinas() {
         const marca = r.id + '|' + soDigito(cfg.gestor_zap);
         if (jaAvisado.has(marca)) continue;
 
-        const ref = 'cv_' + r.id + '_' + cfg.sucursal_id + '_' + hoje;
+        /* A trava incluía só a rotina e o dia. Mudar o horário de uma rotina
+           já cobrada não fazia efeito no mesmo dia — o que atrapalha na hora
+           de ajustar e testar. Com a hora na marca, editar o horário libera
+           uma nova cobrança; deixar como está continua cobrando uma vez. */
+        const ref = 'cv_' + r.id + '_' + cfg.sucursal_id + '_' + hoje + '_' + hh.replace(':', '');
         const { data: ja } = await sb.from('assistente_conversas')
           .select('id').eq('ref_local', ref).maybeSingle();
         if (ja) continue;                                 /* já cobrou hoje */

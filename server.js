@@ -614,9 +614,14 @@ async function cobrarRotinas() {
            de ajustar e testar. Com a hora na marca, editar o horário libera
            uma nova cobrança; deixar como está continua cobrando uma vez. */
         const ref = 'cv_' + r.id + '_' + cfg.sucursal_id + '_' + hoje + '_' + hh.replace(':', '');
+
+        /* Mudar o formato da marca fez o robô esquecer o que já tinha cobrado
+           e mandar tudo de novo. A trava passa a olhar a ROTINA e o DIA, não
+           o texto da marca — assim o formato pode mudar sem repetir mensagem. */
         const { data: ja } = await sb.from('assistente_conversas')
-          .select('id').eq('ref_local', ref).maybeSingle();
-        if (ja) continue;                                 /* já cobrou hoje */
+          .select('id').eq('rotina_id', r.id).eq('data', hoje)
+          .eq('sucursal_id', cfg.sucursal_id).limit(1);
+        if (ja && ja.length) continue;                    /* já cobrou hoje */
 
         try {
           await CANAL.enviarPergunta({

@@ -273,9 +273,155 @@ function contem(texto, termos) {
     return palavras.some(p => pareceCom(p, t));             /* erro de digitação */
   });
 }
+
+/* =====================================================================
+   ASSISTENTE DE GESTÃO DO NEXOR
+   Não é a atendente que fala com cliente. Esta responde ao GESTOR da loja,
+   lendo o MESMO banco que o sistema lê — por isso o número nunca diverge
+   do que aparece na tela do Nexor.
+   Só atende o número cadastrado como gestor daquela loja.
+   ===================================================================== */
+const soDigito = (v) => String(v || '').replace(/\D/g, '');
+
+function ehGestor(cfg, tel) {
+  const g = soDigito(cfg && cfg.gestor_zap);
+  if (!g) return false;
+  const t = soDigito(tel);
+  return t.endsWith(g.slice(-8)) && g.length >= 8;
+}
+
+function hojeSP() {
+  return new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/* ---- faturamento do dia ---- */
+async function respFaturamento(lojaLoja) {
+  const hoje = hojeSP();
+  const { data } = await sb.from('pedidos')
+    .select('total,tipo,fase').eq('loja_id', lojaLoja).eq('data_venda', hoje);
+  const ps = (data || []).filter(p => p.fase !== 'cancelado');
+  const tot = ps.reduce((a, p) => a + (Number(p.total) || 0), 0);
+  if (!ps.length) return 'Ainda não há venda registrada hoje.';
+  const tm = tot / ps.length;
+  return `📊 *Faturamento de hoje*\n\n` +
+    `Total: *R$ ${dinheiro(tot)}*\n` +
+    `Pedidos: ${ps.length}\n` +
+    `Ticket médio: R$ ${dinheiro(tm)}`;
+}
+
+/* ---- saldo de um insumo ---- */
+async function respEstoque(lojaLoja, termo) {
+  const busca = limpar(termo).trim();
+  if (busca.length < 3) return 'Me diga o nome do item com pelo menos 3 letras.';
+  const { data } = await sb.from('insumos')
+    .select('nome,estoque_atual,estoque_min,unidade,custo')
+    .eq('loja_id', lojaLoja).ilike('nome', '%' + busca + '%').limit(6);
+  if (!data || !data.length) return `Não achei nenhum item com "${termo}".`;
+  if (data.length === 1) {
+    const i = data[0];
+    const baixo = Number(i.estoque_atual) <= Number(i.estoque_min);
+    return `📦 *${i.nome}*\n\nSaldo: *${dinheiro(i.estoque_atual)} ${i.unidade || ''}*\n` +
+      `Mínimo: ${dinheiro(i.estoque_min)} ${i.unidade || ''}` +
+      (baixo ? '\n\n⚠️ Está abaixo do mínimo.' : '');
+  }
+  return `Achei ${data.length} itens:\n\n` + data.map(i =>
+    `• ${i.nome} — ${dinheiro(i.estoque_atual)} ${i.unidade || ''}`).join('\n') +
+    '\n\nMe diga qual deles.';
+}
+
+/* ---- o que precisa comprar ---- */
+async function respComprar(lojaLoja) {
+  const { data } = await sb.from('insumos')
+    .select('nome,estoque_atual,estoque_min,unidade')
+    .eq('loja_id', lojaLoja).eq('controla_estoque', true).limit(400);
+  const faltam = (data || []).filter(i =>
+    Number(i.estoque_min) > 0 && Number(i.estoque_atual) <= Number(i.estoque_min));
+  if (!faltam.length) return '✅ Nenhum item abaixo do mínimo. Estoque em dia.';
+  return `🛒 *Precisa comprar* (${faltam.length} itens)\n\n` +
+    faltam.slice(0, 25).map(i =>
+      `• ${i.nome} — tem ${dinheiro(i.estoque_atual)}, mínimo ${dinheiro(i.estoque_min)} ${i.unidade || ''}`
+    ).join('\n') + (faltam.length > 25 ? `\n\n…e mais ${faltam.length - 25}.` : '');
+}
+
+/* ---- boletos a pagar ---- */
+async function respBoletos(lojaLoja) {
+  const hoje = hojeSP();
+  const { data } = await sb.from('lancamentos_financeiros')
+    .select('descricao,valor,vencimento,fornecedor_nome')
+    .eq('loja_id', lojaLoja).eq('tipo', 'despesa').eq('pago', false)
+    .lte('vencimento', hoje).order('vencimento');
+  if (!data || !data.length) return '✅ Nenhum boleto vencido ou vencendo hoje.';
+  const tot = data.reduce((a, l) => a + (Number(l.valor) || 0), 0);
+  return `💰 *A pagar até hoje* (${data.length})\n\n` + data.slice(0, 15).map(l =>
+    `• ${l.descricao} — R$ ${dinheiro(l.valor)} (venc. ${(l.vencimento || '').split('-').reverse().join('/')})`
+  ).join('\n') + `\n\nTotal: *R$ ${dinheiro(tot)}*`;
+}
+
+/* ---- checklist: grava a resposta ---- */
+async function respChecklist(lojaLoja, tel, texto) {
+  const hoje = hojeSP();
+  const { data: abertas } = await sb.from('assistente_conversas')
+    .select('id,rotina_nome,pergunta').eq('loja_id', lojaLoja).eq('data', hoje)
+    .is('respondida_em', null).limit(1);
+  if (!abertas || !abertas.length) return null;
+  const t = limpar(texto);
+  const sim = /\b(sim|ja fiz|feito|fiz|ok|pronto|concluido)\b/.test(t);
+  const nao = /\b(nao|ainda nao|negativo|nao fiz)\b/.test(t);
+  if (!sim && !nao) return null;
+  await sb.from('assistente_conversas').update({
+    respondida_em: new Date().toISOString(),
+    resposta: texto, feito: sim, telefone: tel
+  }).eq('id', abertas[0].id);
+  return sim
+    ? `✅ Anotado: *${abertas[0].rotina_nome}* feito hoje. Obrigada!`
+    : `📝 Anotado que o *${abertas[0].rotina_nome}* ainda não foi feito. Vou lembrar mais tarde.`;
+}
+
+/* ---- roteador da assistente de gestão ---- */
+async function respostaGestao(lojaLoja, cfg, tel, texto) {
+  if (!sb) return null;
+  if (cfg.assistente_ativa === false) return null;
+  if (!ehGestor(cfg, tel)) return null;
+
+  /* resposta de checklist tem prioridade: pode ser só "sim" */
+  const ck = await respChecklist(lojaLoja, tel, texto);
+  if (ck) return ck;
+
+  const t = limpar(texto);
+
+  if (contem(t, ['faturamento', 'quanto vendi', 'quanto vendeu', 'venda de hoje',
+                 'vendas de hoje', 'quanto foi hoje', 'total do dia']))
+    return respFaturamento(lojaLoja);
+
+  if (contem(t, ['precisa comprar', 'lista de compra', 'o que comprar',
+                 'abaixo do minimo', 'estoque baixo', 'falta o que']))
+    return respComprar(lojaLoja);
+
+  if (contem(t, ['boleto', 'a pagar', 'contas a pagar', 'vencendo', 'vencido']))
+    return respBoletos(lojaLoja);
+
+  const mEst = t.match(/(?:quanto tem de|estoque de|saldo de|quanto de)\s+(.+)/);
+  if (mEst) return respEstoque(lojaLoja, mEst[1]);
+
+  if (contem(t, ['menu', 'o que voce faz', 'ajuda', 'comandos']))
+    return '🤖 *Assistente Nexor*\n\nPode me perguntar:\n' +
+      '• _qual o faturamento de hoje_\n' +
+      '• _quanto tem de açúcar_\n' +
+      '• _o que precisa comprar_\n' +
+      '• _tem boleto para pagar_\n\n' +
+      'E eu te cobro o checklist todo dia.';
+  return null;
+}
+
 async function montarResposta(lojaId, tel, texto) {
   const cfg = await buscarCfg(lojaId);
   if (cfg?.robo_ativo === false) return null;
+
+  /* o gestor da loja fala com a assistente de gestão, não com a atendente */
+  try {
+    const g = await respostaGestao(cfg.loja_id || lojaId, cfg, tel, texto);
+    if (g) return g;
+  } catch (e) { console.error('gestao', e && e.message); }
 
   const t = limpar(texto);
   const agora = Date.now();

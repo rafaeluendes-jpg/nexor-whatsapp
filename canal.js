@@ -79,6 +79,48 @@ async function enviarDocumentoPelaMeta(telefone, urlArquivo, nomeArquivo, legend
   return r.json();
 }
 
+/* ---------- botões de verdade (só pela Meta) ----------
+   Pergunta de sim/não sem botão obriga o gestor a digitar, e ele responde
+   "ja fiz", "fiz sim", "ainda nao" — cada um de um jeito. Com botão, a
+   resposta chega padronizada e o registro fica limpo. */
+async function enviarBotoesPelaMeta(telefone, texto, botoes) {
+  const r = await fetch(`https://graph.facebook.com/${META_VERSAO}/${META_NUMERO}/messages`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${META_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: soDigito(telefone),
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { text: texto.slice(0, 1024) },
+        action: {
+          buttons: botoes.slice(0, 3).map((b, i) => ({
+            type: 'reply', reply: { id: b.id || ('b' + i), title: b.titulo.slice(0, 20) }
+          }))
+        }
+      }
+    })
+  });
+  if (!r.ok) {
+    const d = await r.text();
+    throw new Error(`Meta recusou os botões (${r.status}): ${d.slice(0, 200)}`);
+  }
+  return r.json();
+}
+
+/* Manda com botão quando dá; sem a Meta, cai no texto com a instrução. */
+async function enviarPergunta({ sessoes, lojaId, telefone, texto, botoes }) {
+  if (metaPronta() && botoes && botoes.length) {
+    try { await enviarBotoesPelaMeta(telefone, texto, botoes); return { por: 'meta-botao' }; }
+    catch (e) { console.error('botao falhou, indo por texto:', e.message); }
+  }
+  const dica = botoes && botoes.length
+    ? '\n\n' + botoes.map(b => '*' + b.titulo + '*').join('  ou  ')
+    : '';
+  return enviarPara({ canal: 'assistente', sessoes, lojaId, telefone, texto: texto + dica });
+}
+
 /* ---------- envio pelo Baileys ---------- */
 async function enviarPeloBaileys(sessoes, lojaId, telefone, texto) {
   const s = sessoes[lojaId];
@@ -170,6 +212,6 @@ async function baixarMidiaMeta(id) {
 }
 
 module.exports = {
-  metaPronta, enviarPara, rotasMeta, variacoesBR, soDigito,
+  metaPronta, enviarPara, enviarPergunta, rotasMeta, variacoesBR, soDigito,
   enviarDocumentoPelaMeta,
 };

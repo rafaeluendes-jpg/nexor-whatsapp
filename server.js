@@ -540,8 +540,10 @@ async function respChecklist(lojaLoja, tel, texto) {
     .is('respondida_em', null).limit(1);
   if (!abertas || !abertas.length) return null;
   const t = limpar(texto);
-  const sim = /\b(sim|ja fiz|feito|fiz|ok|pronto|concluido|s)\b/.test(t);
-  const nao = /\b(nao|ainda nao|negativo|nao fiz|n)\b/.test(t);
+  /* "Sim, já fiz" e "Ainda não" são os títulos dos botões da Meta; o resto
+     cobre quem digita à mão, que escreve de todo jeito. */
+  const nao = /\b(nao|ainda nao|negativo|nao fiz|nao consegui|n)\b/.test(t);
+  const sim = !nao && /\b(sim|ja fiz|feito|fiz|ok|pronto|concluido|conclui|s)\b/.test(t);
   if (!sim && !nao) return null;
   await sb.from('assistente_conversas').update({
     respondida_em: new Date().toISOString(),
@@ -573,6 +575,11 @@ async function cobrarRotinas() {
                String(agora.getUTCMinutes()).padStart(2, '0');
     const diaSem = agora.getUTCDay() === 0 ? 7 : agora.getUTCDay();
 
+    /* Duas lojas com o MESMO gestor recebiam a mesma pergunta duas vezes.
+       A cobrança é para a pessoa, não para a loja: quem já foi avisado
+       daquela rotina hoje não é avisado de novo. */
+    const jaAvisado = new Set();
+
     for (const cfg of cfgs) {
       if (!soDigito(cfg.gestor_zap)) continue;
 
@@ -599,15 +606,21 @@ async function cobrarRotinas() {
         const alvo = Array.isArray(r.sucursais) ? r.sucursais : [];
         if (alvo.length && alvo.indexOf(cfg.sucursal_id) < 0) continue;
 
+        const marca = r.id + '|' + soDigito(cfg.gestor_zap);
+        if (jaAvisado.has(marca)) continue;
+
         const ref = 'cv_' + r.id + '_' + cfg.sucursal_id + '_' + hoje;
         const { data: ja } = await sb.from('assistente_conversas')
           .select('id').eq('ref_local', ref).maybeSingle();
         if (ja) continue;                                 /* já cobrou hoje */
 
         try {
-          await CANAL.enviarPara({
-            canal: 'assistente', sessoes, lojaId: cfg.sucursal_id,
-            telefone: soDigito(cfg.gestor_zap), texto: r.pergunta
+          await CANAL.enviarPergunta({
+            sessoes, lojaId: cfg.sucursal_id,
+            telefone: soDigito(cfg.gestor_zap), texto: r.pergunta,
+            botoes: r.tipo_resposta === 'texto' ? null
+              : [{ id: 'sim', titulo: 'Sim, já fiz' },
+                 { id: 'nao', titulo: 'Ainda não' }]
           });
         } catch (e) {
           console.error('rotina não saiu:', r.nome, e && e.message);
@@ -620,6 +633,7 @@ async function cobrarRotinas() {
           rotina_nome: r.nome, data: hoje, pergunta: r.pergunta,
           telefone: soDigito(cfg.gestor_zap)
         });
+        jaAvisado.add(marca);
         console.log('rotina cobrada:', r.nome, cfg.sucursal_id);
       }
     }

@@ -20,7 +20,7 @@
    perguntado e o que ele respondeu, com hora.
    ========================================================== */
 
-const ETAPAS = { LENDO: 'lendo', ITEM: 'item', TOTAL: 'total' };
+const ETAPAS = { LENDO: 'lendo', ITEM: 'item', TOTAL: 'total', PAGO: 'pago' };
 
 /* conversa em andamento, por telefone. Vive na memória: se o robô
    reiniciar no meio, o gestor recomeça — melhor que aplicar um
@@ -211,13 +211,32 @@ async function responder({ sb, telefone, texto, gravar }) {
 
   if (ehCancelar(texto)) { emCurso.delete(telefone); return 'Cancelado. Nada foi lançado.'; }
 
+  /* --- como foi pago --- */
+  if (s.etapa === ETAPAS.PAGO) {
+    const p = simples(texto);
+    if (/^(1|ja paguei|paguei|pago|a vista|avista|dinheiro|pix|debito|cartao)/.test(p)) {
+      s.pagamento = { pago: true, forma: texto.trim() };
+    } else if (/^(2|a prazo|prazo|boleto|depois|nao paguei|a pagar|fiado)/.test(p)) {
+      s.pagamento = { pago: false, forma: texto.trim() };
+    } else {
+      return dizer('Só para eu registrar certo: responda *1* se já pagou, ou *2* se ficou a prazo.');
+    }
+    const r = await gravar(s);
+    emCurso.delete(telefone);
+    return dizer(r);
+  }
+
   /* --- fechamento --- */
   if (s.etapa === ETAPAS.TOTAL) {
     if (ehNao(texto)) { emCurso.delete(telefone); return dizer('Não lancei nada. Pode mandar de novo quando quiser.'); }
     if (!ehSim(texto)) return dizer('Só para eu ter certeza: responda *sim* para lançar, ou *não* para descartar.');
-    const r = await gravar(s);
-    emCurso.delete(telefone);
-    return dizer(r);
+    /* O financeiro precisa saber se saiu dinheiro agora ou se virou conta a
+       pagar. Sem essa pergunta, todo lançamento entraria em aberto e o fluxo
+       de caixa mentiria. Qual banco não se pergunta aqui: quem paga escolhe
+       na tela, como no resto do sistema. */
+    s.etapa = ETAPAS.PAGO;
+    return dizer('Última coisa: essa compra *já foi paga* ou ficou *a prazo*?\n\n' +
+      '*1* — já paguei\n*2* — a prazo, vou pagar depois');
   }
 
   /* --- conferência de item --- */
@@ -279,6 +298,8 @@ async function gravarPendente(sb, s) {
     documento: s.cabecalho.documento || '',
     data: s.cabecalho.data,
     valorTotal: s.cabecalho.valorTotal,
+    pago: !!(s.pagamento && s.pagamento.pago),
+    formaPagamento: (s.pagamento && s.pagamento.forma) || '',
     itens: validos.map(x => ({
       insumoId: x.insumoId, insumoRef: x.insumoRef, nome: x.nomeCadastro,
       quantidade: x.quantidade, unidade: x.unidade,
@@ -297,8 +318,9 @@ async function gravarPendente(sb, s) {
   }]);
   if (error) throw new Error(error.message);
 
-  return `✅ *Lançado.*\n${resumo}\n\n` +
-    `Entra no estoque e no financeiro assim que o sistema da loja atualizar — ` +
+  return `✅ *Lançado.*\n${resumo}\n` +
+    (s.pagamento && s.pagamento.pago ? 'Marcado como *pago*.' : 'Fica como *conta a pagar*.') +
+    `\n\nEntra no estoque e no financeiro assim que o sistema da loja atualizar — ` +
     `com o PDV aberto, é questão de segundos.`;
 }
 

@@ -610,9 +610,18 @@ setTimeout(cobrarRotinas, 60 * 1000);
 /* ---- roteador da assistente de gestão ---- */
 /* "comprei 10kg de acucar por 45" — a intencao de lancar tem cara propria.
    Sem isso, "comprei" cairia na atendente e ele receberia oferta de gelato. */
+/* Antes isto era uma lista de verbos: "comprei", "lançar", "chegou".
+   "Registrar compra de 4 kg de farinha" não estava nela e o gestor recebia
+   o menu de ajuda. O que define um lançamento não é o verbo — é a forma:
+   um item, uma quantidade e um valor. */
 function pareceLancamento(t) {
-  return /\b(comprei|compramos|lancar|lançar|lanca|nota fiscal|nota de|entrada de|chegou|recebi)\b/.test(t)
-      && /[\d]/.test(t);
+  if (!/\d/.test(t)) return false;
+  const verbo = /\b(comprei|compramos|compra|comprar|lancar|lanca|lançar|lança|registrar|registra|nota|entrada|chegou|recebi|recebemos|paguei|adquiri)\b/.test(t);
+  /* "4 kg de farinha", "10 un de copo", "2,5 l de leite" */
+  const medida = /\d+[.,]?\d*\s*(kg|kilo|quilos?|g|gramas?|l|litros?|ml|un|unid|unidades?|cx|caixas?|pct|pacotes?|sc|sacos?)\b/.test(t);
+  /* "por 45", "a 2 reais", "R$ 8,00" */
+  const dinheiro = /(r\$|reais?|\bpor\b|\bcusto\b|\bvalor\b)\s*\d|\d+[.,]?\d*\s*(reais?|r\$)/.test(t);
+  return verbo || (medida && dinheiro);
 }
 
 async function respostaGestao(lojaLoja, cfg, tel, texto, imagemRecebida, soAssistente) {
@@ -674,6 +683,26 @@ async function respostaGestao(lojaLoja, cfg, tel, texto, imagemRecebida, soAssis
 
   if (/\b(comprar|compra|lista|abaixo do minimo|acabando|falta|repor|repos|estoque baixo)/.test(t))
     return respComprar(lojaLoja);
+
+  /* Nada casou pelas regras. Em vez de despejar o menu — que é o robô
+     empurrando o trabalho de volta para o gestor — a IA lê a frase e diz
+     qual é a intenção. Ela só classifica; quem responde é o código de
+     sempre, com dado do banco. */
+  if (!contem(t, ['menu', 'o que voce faz', 'ajuda', 'comandos'])) {
+    const alvo = await classificarPergunta(texto);
+    if (alvo === 'faturamento') return respFaturamento(lojaLoja);
+    if (alvo === 'comprar')     return respComprar(lojaLoja);
+    if (alvo === 'boletos')     return respBoletos(lojaLoja);
+    if (alvo && alvo.indexOf('estoque:') === 0)
+      return respEstoque(lojaLoja, alvo.slice(8));
+    if (alvo === 'lancamento') {
+      const r = await LANC.iniciar({
+        sb, lojaId: lojaLoja, sucursalId: cfg.sucursal_id, telefone: tel,
+        texto, imagem: null, chamarIA: chamarIAExtrair
+      });
+      if (r) return r;
+    }
+  }
 
   if (contem(t, ['menu', 'o que voce faz', 'ajuda', 'comandos']))
     return '🤖 *Assistente Nexor*\n\nPode me perguntar:\n' +
@@ -1054,6 +1083,43 @@ async function chamarIAExtrair(sistema, msgs, comFoto) {
     } catch (e) { console.log('[extrair] erro:', e.message); }
   }
   return null;
+}
+
+/* ----------------------------------------------------------
+   A IA COMO INTÉRPRETE, NÃO COMO RESPONDENTE.
+   Ela lê a frase e devolve UMA palavra dizendo o que o gestor
+   quer. Não inventa número nem responde nada: os dados vêm do
+   banco, como sempre. Assim o gestor escreve do jeito dele e
+   não precisa decorar comando.
+   ---------------------------------------------------------- */
+const INTENCAO = `Você classifica pedidos do dono de uma loja ao sistema de gestão dele.
+Responda com UMA palavra apenas, sem explicação, sem pontuação:
+
+faturamento  - quanto vendeu, quanto entrou, movimento, caixa do dia
+comprar      - o que falta, o que repor, lista de compras, o que está acabando
+boletos      - contas a pagar, vencimentos, despesas
+estoque:ITEM - saldo de um item específico. Troque ITEM pelo nome (ex: estoque:farinha)
+lancamento   - registrar uma compra/nota de entrada de mercadoria
+nenhum       - qualquer outra coisa
+
+Exemplos:
+"quanto vendemos hj" -> faturamento
+"tem farinha ai?" -> estoque:farinha
+"o que ta faltando" -> comprar
+"registrar compra de 4kg de farinha" -> lancamento
+"bom dia" -> nenhum`;
+
+async function classificarPergunta(texto) {
+  if (!texto || texto.length < 3) return null;
+  try {
+    const r = await chamarIAExtrair(INTENCAO, [{ role: 'user', content: texto }], false);
+    if (!r) return null;
+    const a = limpar(String(r).split('\n')[0]).trim();
+    if (a === 'nenhum' || !a) return null;
+    if (['faturamento', 'comprar', 'boletos', 'lancamento'].includes(a)) return a;
+    if (a.indexOf('estoque:') === 0 && a.length > 11) return a;
+    return null;
+  } catch (e) { return null; }
 }
 
 /* teste da IA pelo navegador */

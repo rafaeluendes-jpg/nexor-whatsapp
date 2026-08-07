@@ -484,13 +484,23 @@ async function montarResposta(lojaId, tel, texto) {
   const link = cfg?.link_cardapio || 'https://rafaeluendes-jpg.github.io/delivery/';
   const nome = cfg?.nome_loja || 'nossa loja';
 
-  /* 1) a atendente virtual responde primeiro */
-  if (cfg?.ia_ativa !== false && (GROQ_KEY || GEMINI_KEY)) {
-    const r = await responderComIA(texto, tel, cfg, link, nome, primeiraVez);
-    if (r) return r;
+  /* Um OU outro, nunca os dois — era isso que dava conflito.
+     Atendente ligada: só ela responde. Desligada: só as respostas prontas. */
+  const querIA = cfg?.ia_ativa !== false;
+
+  if (querIA) {
+    if (GROQ_KEY || GEMINI_KEY) {
+      const r = await responderComIA(texto, tel, cfg, link, nome, primeiraVez);
+      if (r) return r;
+      /* a IA não soube responder: ela mesma pede desculpa, sem passar a bola
+         para a resposta pronta e sair com outro tom no meio da conversa */
+      return `Não entendi bem 😅 Pode me explicar de outro jeito?\n\n` +
+             `Se preferir, o cardápio está aqui: ${link}`;
+    }
+    /* sem chave de IA configurada: as respostas prontas seguram, senão fica mudo */
+    return respostaPronta(t, cfg, link, nome, primeiraVez);
   }
 
-  /* 2) sem IA disponível: as respostas prontas assumem */
   return respostaPronta(t, cfg, link, nome, primeiraVez);
 }
 

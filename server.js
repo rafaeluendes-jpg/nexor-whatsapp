@@ -575,30 +575,51 @@ async function cobrarRotinas() {
 
     for (const cfg of cfgs) {
       if (!soDigito(cfg.gestor_zap)) continue;
-      const ses = sessoes[cfg.sucursal_id];
-      if (!ses || ses.estado !== 'conectado' || !ses.sock) continue;
-      const sock = ses.sock;
+
+      /* A cobrança saía SÓ pelo Baileys: exigia sessão de QR conectada.
+         A Assistente Nexor vai pela Meta e não tem sessão — então nunca
+         disparava. Agora vai pela camada de canal, que escolhe sozinha. */
+      const temBaileys = sessoes[cfg.sucursal_id] &&
+        sessoes[cfg.sucursal_id].estado === 'conectado';
+      if (!CANAL.metaPronta() && !temBaileys) continue;   /* sem caminho de saída */
 
       const { data: rots } = await sb.from('assistente_rotinas')
         .select('*').eq('loja_id', cfg.loja_id).eq('ativa', true).order('ordem');
       for (const r of (rots || [])) {
         const dias = Array.isArray(r.dias) ? r.dias : [1,2,3,4,5,6];
         if (dias.indexOf(diaSem) < 0) continue;
-        if (hm < (r.hora || '10:00')) continue;          /* ainda não deu a hora */
 
-        const ref = 'cv_' + r.id + '_' + hoje;
+        /* "18:14" < "18:14:00" é verdadeiro comparando texto — a rotina
+           nunca achava que tinha dado a hora. Compara em minutos. */
+        const hh = String(r.hora || '10:00').slice(0, 5);
+        const min = (x) => Number(x.slice(0, 2)) * 60 + Number(x.slice(3, 5));
+        if (min(hm) < min(hh)) continue;
+
+        /* a matriz escolheu quais unidades recebem; vazio = todas */
+        const alvo = Array.isArray(r.sucursais) ? r.sucursais : [];
+        if (alvo.length && alvo.indexOf(cfg.sucursal_id) < 0) continue;
+
+        const ref = 'cv_' + r.id + '_' + cfg.sucursal_id + '_' + hoje;
         const { data: ja } = await sb.from('assistente_conversas')
           .select('id').eq('ref_local', ref).maybeSingle();
         if (ja) continue;                                 /* já cobrou hoje */
 
+        try {
+          await CANAL.enviarPara({
+            canal: 'assistente', sessoes, lojaId: cfg.sucursal_id,
+            telefone: soDigito(cfg.gestor_zap), texto: r.pergunta
+          });
+        } catch (e) {
+          console.error('rotina não saiu:', r.nome, e && e.message);
+          continue;   /* não grava o que não foi enviado */
+        }
+
         await sb.from('assistente_conversas').insert({
           loja_id: cfg.loja_id, ref_local: ref, rotina_id: r.id,
+          sucursal_id: cfg.sucursal_id,
           rotina_nome: r.nome, data: hoje, pergunta: r.pergunta,
           telefone: soDigito(cfg.gestor_zap)
         });
-        const jid = soDigito(cfg.gestor_zap).replace(/^0+/, '');
-        const num = jid.startsWith('55') ? jid : '55' + jid;
-        await sock.sendMessage(num + '@s.whatsapp.net', { text: r.pergunta });
         console.log('rotina cobrada:', r.nome, cfg.sucursal_id);
       }
     }

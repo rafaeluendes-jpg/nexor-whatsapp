@@ -511,23 +511,48 @@ async function respBoletos(lojaLoja) {
 }
 
 /* ---- checklist: grava a resposta ---- */
+/* quem respondeu "não" e ainda deve o motivo, por telefone */
+const esperandoMotivo = new Map();
+
 async function respChecklist(lojaLoja, tel, texto) {
   const hoje = hojeSP();
+
+  /* Primeiro: ele respondeu "não" agora há pouco e isto é o motivo.
+     O motivo vale mais que o "não" — sem ele o relatório diz que
+     falhou, mas não diz por quê, e a franqueadora não tem o que fazer
+     com a informação. */
+  const pend = esperandoMotivo.get(tel);
+  if (pend && Date.now() - pend.quando < 30 * 60 * 1000) {
+    const t0 = limpar(texto);
+    if (t0.length < 3) return 'Me conte em poucas palavras o que atrapalhou.';
+    esperandoMotivo.delete(tel);
+    try {
+      await sb.from('assistente_conversas').update({
+        motivo: texto.trim(), motivo_em: new Date().toISOString()
+      }).eq('id', pend.id);
+    } catch (e) { console.error('motivo:', e && e.message); }
+    return `📝 Anotado: _"${texto.trim()}"_\n\n` +
+      `Isso vai junto no relatório da franqueadora. Obrigada!`;
+  }
+
   const { data: abertas } = await sb.from('assistente_conversas')
     .select('id,rotina_nome,pergunta').eq('loja_id', lojaLoja).eq('data', hoje)
     .is('respondida_em', null).limit(1);
   if (!abertas || !abertas.length) return null;
   const t = limpar(texto);
-  const sim = /\b(sim|ja fiz|feito|fiz|ok|pronto|concluido)\b/.test(t);
-  const nao = /\b(nao|ainda nao|negativo|nao fiz)\b/.test(t);
+  const sim = /\b(sim|ja fiz|feito|fiz|ok|pronto|concluido|s)\b/.test(t);
+  const nao = /\b(nao|ainda nao|negativo|nao fiz|n)\b/.test(t);
   if (!sim && !nao) return null;
   await sb.from('assistente_conversas').update({
     respondida_em: new Date().toISOString(),
     resposta: texto, feito: sim, telefone: tel
   }).eq('id', abertas[0].id);
-  return sim
-    ? `✅ Anotado: *${abertas[0].rotina_nome}* feito hoje. Obrigada!`
-    : `📝 Anotado que o *${abertas[0].rotina_nome}* ainda não foi feito. Vou lembrar mais tarde.`;
+
+  if (sim) return `✅ Anotado: *${abertas[0].rotina_nome}* feito hoje. Obrigada!`;
+
+  esperandoMotivo.set(tel, { id: abertas[0].id, quando: Date.now() });
+  return `📝 Anotado que o *${abertas[0].rotina_nome}* ainda não foi feito.\n\n` +
+    `O que atrapalhou? Me conte em poucas palavras — fica registrado junto.`;
 }
 
 /* ---- agendador: cobra as rotinas no horário ----

@@ -1385,31 +1385,27 @@ app.post('/enviar', protege, daMinhaLoja, async (req, res) => {
       recebido: { loja, telefone, temTexto: !!texto } });
     return res.status(400).json({ erro: 'informe loja, telefone e texto' });
   }
-  let s = sessoes[loja];
-  /* a loja pedida não tem sessão? usa a única conectada, se houver */
-  if (!s?.sock || s.estado !== 'conectado') {
-    const conectadas = Object.keys(sessoes)
-      .filter(k => sessoes[k]?.sock && sessoes[k].estado === 'conectado');
-    if (conectadas.length === 1) {
-      console.log('loja ' + loja + ' sem sessao — usando ' + conectadas[0]);
-      s = sessoes[conectadas[0]];
-    } else {
-      registrar({ ok: false, motivo: 'nenhuma loja conectada',
-        pedida: loja, conectadas, telefone });
-      return res.status(409).json({
-        erro: 'nenhuma loja conectada', pedida: loja, conectadas
-      });
-    }
+  /* Antes esta rota exigia sessão de Baileys conectada. Os avisos de caixa
+     — abertura, fechamento, cancelamento, sangria — passam por aqui, e com a
+     Assistente na Meta não havia sessão nenhuma: o gerente fechava o caixa e
+     não chegava nada. Agora sai pela camada de canal, que escolhe o caminho. */
+  const temBaileys = Object.keys(sessoes)
+    .some(k => sessoes[k]?.sock && sessoes[k].estado === 'conectado');
+  if (!CANAL.metaPronta() && !temBaileys) {
+    registrar({ ok: false, motivo: 'sem caminho de saida (nem Meta nem Baileys)',
+      pedida: loja, telefone });
+    return res.status(409).json({ erro: 'nenhum canal de envio disponível' });
   }
   try {
     const num = String(telefone).replace(/\D/g, '');
-    const jid = (num.startsWith('55') ? num : '55' + num) + '@s.whatsapp.net';
-    await s.sock.sendMessage(jid, { text: texto });
-    registrar({ ok: true, para: jid, loja, inicio: texto.slice(0, 40) });
+    await CANAL.enviarPara({
+      canal: 'assistente', sessoes, lojaId: loja, telefone: num, texto
+    });
+    registrar({ ok: true, para: num, loja, inicio: texto.slice(0, 40) });
     if (sb) sb.from('whatsapp_mensagens').insert([{
       sucursal_id: loja, telefone: num, direcao: 'enviada', texto
     }]).then(() => {}, () => {});
-    res.json({ ok: true, para: jid });
+    res.json({ ok: true, para: num });
   } catch (e) {
     registrar({ ok: false, motivo: 'erro ao enviar: ' + e.message, loja, telefone });
     res.status(500).json({ erro: e.message });

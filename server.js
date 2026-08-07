@@ -567,10 +567,21 @@ function pareceLancamento(t) {
       && /[\d]/.test(t);
 }
 
-async function respostaGestao(lojaLoja, cfg, tel, texto, imagemRecebida) {
+async function respostaGestao(lojaLoja, cfg, tel, texto, imagemRecebida, soAssistente) {
   if (!sb) return null;
   if (cfg.assistente_ativa === false) return null;
-  if (!ehGestor(cfg, tel)) return null;
+  if (!ehGestor(cfg, tel)) {
+    /* No número da plataforma, número desconhecido merece resposta clara.
+       Devolver null aqui fazia a Carla atender — e o gestor cujo WhatsApp
+       ainda não foi cadastrado recebia oferta de gelato. */
+    if (soAssistente) {
+      return 'Não reconheci este número 🤔\n\n' +
+        'Para falar comigo, seu WhatsApp precisa estar cadastrado no Nexor, ' +
+        'em Canais de Venda e Integração › Assistente Nexor › WhatsApp do dono ' +
+        'da loja.\n\nFale com quem administra a sua rede.';
+    }
+    return null;
+  }
 
   /* Conversa de lançamento em andamento vem ANTES de tudo: enquanto ele
      está conferindo item a item, "sim" é resposta de item, não de checklist. */
@@ -621,15 +632,38 @@ async function respostaGestao(lojaLoja, cfg, tel, texto, imagemRecebida) {
   return null;
 }
 
-async function montarResposta(lojaId, tel, texto, imagem) {
+async function montarResposta(lojaId, tel, texto, imagem, soAssistente) {
   const cfg = await buscarCfg(lojaId);
-  if (cfg?.robo_ativo === false) return null;
+  if (cfg?.robo_ativo === false && !soAssistente) return null;
 
   /* o gestor da loja fala com a assistente de gestão, não com a atendente */
   try {
-    const g = await respostaGestao(cfg.loja_id || lojaId, cfg, tel, texto, imagem);
+    const g = await respostaGestao(cfg.loja_id || lojaId, cfg, tel, texto, imagem, soAssistente);
     if (g) return g;
   } catch (e) { console.error('gestao', e && e.message); }
+
+  /* ---------------------------------------------------------------
+     O NÚMERO DA ASSISTENTE NUNCA VIRA ATENDENTE.
+
+     Ele é um só para toda a plataforma Nexor e fala com gestor: não
+     vende gelato, não tem cardápio, não conhece sabor. Antes, quando
+     a assistente não sabia responder, a resposta caía na Carla — e o
+     gestor perguntava quanto tem de açúcar e recebia oferta de sabores.
+
+     Na caixa da loja (Baileys) a queda para a Carla continua certa:
+     lá cliente e gestor dividem o mesmo número.
+     --------------------------------------------------------------- */
+  if (soAssistente) {
+    const quem = cfg?.assistente_nome || 'a assistente do Nexor';
+    return `Não entendi o que você precisa 🤔\n\n` +
+      `Sou ${quem} e cuido da gestão da sua loja. Posso responder sobre:\n\n` +
+      `• *faturamento* de hoje ou do mês\n` +
+      `• *estoque* de um item — ex.: _quanto tem de açúcar_\n` +
+      `• o que está *abaixo do mínimo*\n` +
+      `• *boletos* a vencer\n` +
+      `• *lançar nota* — mande a foto ou escreva o que comprou\n\n` +
+      `Escreva do seu jeito que eu entendo.`;
+  }
 
   const t = limpar(texto);
   const agora = Date.now();
@@ -1087,7 +1121,8 @@ CANAL.rotasMeta(app, async ({ telefone, texto, imagem }) => {
         telefone, texto: 'Não reconheci este número. Fale com o administrador da sua rede.' });
       return;
     }
-    const resposta = await montarResposta(achou.sucursal_id, telefone, texto, imagem);
+    /* true no fim: veio pelo número da plataforma, então nunca cai na Carla */
+    const resposta = await montarResposta(achou.sucursal_id, telefone, texto, imagem, true);
     if (resposta) {
       await CANAL.enviarPara({ canal: 'assistente', sessoes,
         lojaId: achou.sucursal_id, telefone, texto: resposta });

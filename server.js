@@ -625,8 +625,10 @@ async function cobrarRotinas() {
     }
   } catch (e) { console.error('cobrarRotinas', e && e.message); }
 }
-setInterval(cobrarRotinas, 10 * 60 * 1000);
-setTimeout(cobrarRotinas, 60 * 1000);
+/* De 2 em 2 minutos: com 10, uma rotina marcada para 18:26 podia sair
+   às 18:36 — e horário marcado que atrasa dez minutos não é horário. */
+setInterval(cobrarRotinas, 2 * 60 * 1000);
+setTimeout(cobrarRotinas, 20 * 1000);
 
 /* ---- roteador da assistente de gestão ---- */
 /* "comprei 10kg de acucar por 45" — a intencao de lancar tem cara propria.

@@ -377,6 +377,58 @@ async function respChecklist(lojaLoja, tel, texto) {
     : `📝 Anotado que o *${abertas[0].rotina_nome}* ainda não foi feito. Vou lembrar mais tarde.`;
 }
 
+/* ---- agendador: cobra as rotinas no horário ----
+   Roda de 10 em 10 minutos. Para cada loja com assistente ligada, procura as
+   rotinas do dia que ainda não foram enviadas e manda a pergunta ao gestor.
+   O registro nasce aqui; a resposta preenche o resto. */
+async function cobrarRotinas() {
+  if (!sb) return;
+  try {
+    const { data: cfgs } = await sb.from('whatsapp_config')
+      .select('sucursal_id,loja_id,gestor_zap,assistente_ativa')
+      .eq('assistente_ativa', true);
+    if (!cfgs || !cfgs.length) return;
+
+    const hoje = hojeSP();
+    const agora = new Date(Date.now() - 3 * 3600 * 1000);
+    const hm = String(agora.getUTCHours()).padStart(2, '0') + ':' +
+               String(agora.getUTCMinutes()).padStart(2, '0');
+    const diaSem = agora.getUTCDay() === 0 ? 7 : agora.getUTCDay();
+
+    for (const cfg of cfgs) {
+      if (!soDigito(cfg.gestor_zap)) continue;
+      const ses = sessoes[cfg.sucursal_id];
+      if (!ses || ses.estado !== 'conectado' || !ses.sock) continue;
+      const sock = ses.sock;
+
+      const { data: rots } = await sb.from('assistente_rotinas')
+        .select('*').eq('loja_id', cfg.loja_id).eq('ativa', true).order('ordem');
+      for (const r of (rots || [])) {
+        const dias = Array.isArray(r.dias) ? r.dias : [1,2,3,4,5,6];
+        if (dias.indexOf(diaSem) < 0) continue;
+        if (hm < (r.hora || '10:00')) continue;          /* ainda não deu a hora */
+
+        const ref = 'cv_' + r.id + '_' + hoje;
+        const { data: ja } = await sb.from('assistente_conversas')
+          .select('id').eq('ref_local', ref).maybeSingle();
+        if (ja) continue;                                 /* já cobrou hoje */
+
+        await sb.from('assistente_conversas').insert({
+          loja_id: cfg.loja_id, ref_local: ref, rotina_id: r.id,
+          rotina_nome: r.nome, data: hoje, pergunta: r.pergunta,
+          telefone: soDigito(cfg.gestor_zap)
+        });
+        const jid = soDigito(cfg.gestor_zap).replace(/^0+/, '');
+        const num = jid.startsWith('55') ? jid : '55' + jid;
+        await sock.sendMessage(num + '@s.whatsapp.net', { text: r.pergunta });
+        console.log('rotina cobrada:', r.nome, cfg.sucursal_id);
+      }
+    }
+  } catch (e) { console.error('cobrarRotinas', e && e.message); }
+}
+setInterval(cobrarRotinas, 10 * 60 * 1000);
+setTimeout(cobrarRotinas, 60 * 1000);
+
 /* ---- roteador da assistente de gestão ---- */
 async function respostaGestao(lojaLoja, cfg, tel, texto) {
   if (!sb) return null;

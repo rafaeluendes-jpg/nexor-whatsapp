@@ -635,7 +635,35 @@ async function responderSabores(t, link) {
   return r + '\n\nOs sabores mudam conforme a produção do dia.\n\nPeça aqui:\n' + link;
 }
 
+/* Se a loja está aberta AGORA é estado, não é o horário escrito no cadastro.
+   Sem isso a atendente dizia "estamos abertos" num feriado em que a loja fechou. */
+async function estadoDaLoja(cfg) {
+  const vazio = { aberta: null, entrega: null, retirada: null };
+  if (!sb || !cfg?.loja_id) return vazio;
+  try {
+    const { data } = await sb.from('config_loja')
+      .select('loja_aberta,tempo_entrega,tempo_retirada')
+      .eq('loja_id', cfg.loja_id).maybeSingle();
+    if (!data) return vazio;
+    return {
+      aberta: data.loja_aberta,
+      entrega: data.tempo_entrega,
+      retirada: data.tempo_retirada
+    };
+  } catch (e) { return vazio; }
+}
+
+/* hora local, para ela saber que horas são de verdade */
+function agoraTexto() {
+  const d = new Date(Date.now() - 3 * 3600 * 1000);
+  const dias = ['domingo','segunda-feira','terça-feira','quarta-feira',
+                'quinta-feira','sexta-feira','sábado'];
+  return `${dias[d.getUTCDay()]}, ${String(d.getUTCHours()).padStart(2,'0')}:` +
+         `${String(d.getUTCMinutes()).padStart(2,'0')}`;
+}
+
 async function montarContexto(cfg, link, nome, primeiraVez) {
+  const est = await estadoDaLoja(cfg);
   const sabores = await carregarSabores();
   const zonas   = await carregarZonas();
   const zonaTxt = zonas.filter(z => z.tipo !== 'padrao')
@@ -665,6 +693,12 @@ ${iaNome && apresenta && primeiraVez
 Seu jeito de falar é ${tom}.
 
 INFORMAÇÕES REAIS DE HOJE (use apenas estas, nunca invente):
+- Agora são ${agoraTexto()} (horário de Brasília).
+- A loja está ${est.aberta === true ? 'ABERTA agora — pode receber pedido'
+   : est.aberta === false ? 'FECHADA agora — avise com gentileza e diga que anota para depois'
+   : 'com o estado não informado — vá pelo horário abaixo'}.
+${est.entrega ? `- Tempo de entrega hoje: cerca de ${est.entrega} minutos.` : ''}
+${est.retirada ? `- Tempo para retirada hoje: cerca de ${est.retirada} minutos.` : ''}
 - Link do cardápio: ${link}
 - Horário: ${(cfg?.texto_horario || 'todos os dias das 12h às 23h').replace(/\n/g, ' ')}
 - Endereço: ${(cfg?.texto_endereco || 'informar pelo cardápio').replace(/\n/g, ' ')}
@@ -681,6 +715,9 @@ COMO RESPONDER:
 - Quando fizer sentido, mande o link do cardápio.
 - NUNCA invente sabor, preço, taxa ou promoção. Se não souber, diga que vai
   confirmar com a equipe e peça um instante.
+- Se perguntarem se está aberto, responda pelo ESTADO ACIMA, não pelo horário do
+  cadastro. O estado é o que vale: a loja pode ter fechado mais cedo hoje.
+- Se a loja estiver fechada, não prometa entrega agora.
 - Para cancelamento ou reclamação, peça o número do pedido e avise que a equipe verifica.
 
 CONVERSA NATURAL:

@@ -75,13 +75,34 @@ const EXIGE_CHAVE = CHAVE
   : false;
 const SB_URL = varAmbiente('SUPABASE_URL', 'SUPA_URL', 'SB_URL')
             || acharPorConteudo(v => /^https:\/\/[a-z0-9]+\.supabase\.co/.test(v));
-const SB_KEY = varAmbiente('SUPABASE_KEY', 'SUPA_KEY', 'SB_KEY')
+/* A chave do banco: a SECRETA tem preferência.
+   O robô escreve em tabelas que o navegador não pode tocar (sessões do
+   WhatsApp, conversas de cliente). Com a chave pública ele só consegue
+   isso enquanto essas tabelas estiverem abertas para qualquer um — que
+   é exatamente o que não pode continuar. Com a secreta, ele passa por
+   cima do RLS e as tabelas ficam fechadas para o resto do mundo. */
+const SB_KEY_SECRETA = varAmbiente('SUPABASE_SERVICE_KEY','SUPABASE_SECRET','SB_SECRET')
+            || acharPorConteudo(v => /^sb_secret_/.test(v))
+            || acharPorConteudo(v => /^eyJ/.test(v) && /"role"\s*:\s*"service_role"/.test(
+                 (() => { try { return Buffer.from(v.split('.')[1] || '', 'base64').toString(); }
+                          catch (e) { return ''; } })()));
+const SB_KEY_PUBLICA = varAmbiente('SUPABASE_KEY', 'SUPA_KEY', 'SB_KEY')
             || acharPorConteudo(v => /^(sb_publishable_|eyJ)/.test(v));
+const SB_KEY = SB_KEY_SECRETA || SB_KEY_PUBLICA;
+const CHAVE_E_SECRETA = !!SB_KEY_SECRETA;
 /* chaves de IA — encontradas pelo formato, o nome não importa */
 const GROQ_KEY   = varAmbiente('GROQ_KEY','GROQ_API_KEY') || acharPorConteudo(v => /^gsk_/.test(v));
 const GEMINI_KEY = varAmbiente('GEMINI_KEY','GOOGLE_KEY') || acharPorConteudo(v => /^AIza/.test(v));
 console.log('banco:', SB_URL ? 'encontrado' : 'faltando',
-            '| chave do banco:', SB_KEY ? 'encontrada' : 'faltando');
+            '| chave do banco:', SB_KEY
+              ? (CHAVE_E_SECRETA ? 'SECRETA (correta)' : 'PÚBLICA — troque pela secreta')
+              : 'faltando');
+if (SB_KEY && !CHAVE_E_SECRETA) {
+  console.log('ATENÇÃO — o robô está com a chave pública do banco.');
+  console.log('  Ele só grava sessões e mensagens enquanto essas tabelas');
+  console.log('  estiverem abertas para qualquer um. Troque o valor de');
+  console.log('  CHAVE_BANCO pela chave secreta (service_role) do Supabase.');
+}
 console.log('IA — Groq:', GROQ_KEY ? 'ok' : 'faltando',
             '| Gemini:', GEMINI_KEY ? 'ok' : 'faltando');
 console.log(EXIGE_CHAVE

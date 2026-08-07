@@ -431,12 +431,35 @@ async function respFaturamento(lojaLoja) {
     .select('total,tipo,fase').eq('loja_id', lojaLoja).eq('data_venda', hoje);
   const ps = (data || []).filter(p => p.fase !== 'cancelado');
   const tot = ps.reduce((a, p) => a + (Number(p.total) || 0), 0);
-  if (!ps.length) return 'Ainda não há venda registrada hoje.';
+
+  /* "Ainda não há venda" sozinho é ambíguo: pode ser dia fraco ou caixa
+     que ninguém abriu. São coisas muito diferentes para o dono saber. */
+  let caixa = null;
+  try {
+    const { data: cx } = await sb.from('caixas')
+      .select('operador,aberto_em,fechado_em').eq('loja_id', lojaLoja)
+      .order('aberto_em', { ascending: false }).limit(1);
+    caixa = cx && cx[0] ? cx[0] : null;
+  } catch (e) { /* segue sem o caixa */ }
+
+  const abertoHoje = caixa && !caixa.fechado_em &&
+    String(caixa.aberto_em || '').slice(0, 10) === hoje;
+
+  if (!ps.length) {
+    if (abertoHoje)
+      return `Nenhuma venda ainda hoje.\n\nO caixa está *aberto*` +
+             (caixa.operador ? ` com ${caixa.operador}` : '') + '.';
+    return 'Nenhuma venda hoje — e o *caixa ainda não foi aberto*.';
+  }
+
   const tm = tot / ps.length;
-  return `📊 *Faturamento de hoje*\n\n` +
+  return `📊 *Vendas de hoje*\n\n` +
     `Total: *R$ ${dinheiro(tot)}*\n` +
     `Pedidos: ${ps.length}\n` +
-    `Ticket médio: R$ ${dinheiro(tm)}`;
+    `Ticket médio: R$ ${dinheiro(tm)}\n\n` +
+    (abertoHoje
+      ? `Caixa *aberto*${caixa.operador ? ' com ' + caixa.operador : ''}.`
+      : `Caixa *fechado*.`);
 }
 
 /* ---- saldo de um insumo ---- */
@@ -608,19 +631,24 @@ async function respostaGestao(lojaLoja, cfg, tel, texto, imagemRecebida, soAssis
     if (r) return r;
   }
 
-  if (contem(t, ['faturamento', 'quanto vendi', 'quanto vendeu', 'venda de hoje',
-                 'vendas de hoje', 'quanto foi hoje', 'total do dia']))
+  /* Antes isto era uma lista de frases exatas, e "valor de venda hj" não
+     estava nela — o gestor perguntava do jeito dele e não era entendido.
+     Agora vale a INTENÇÃO: uma palavra de dinheiro/venda basta. */
+  if (/\b(faturamento|faturou|fatura|vendi|vendemos|vendeu|venda|vendas|caixa|receita|entrou|arrecad)/.test(t)
+      && !/\b(cancel|estorn|devolv)/.test(t))
     return respFaturamento(lojaLoja);
 
-  if (contem(t, ['precisa comprar', 'lista de compra', 'o que comprar',
-                 'abaixo do minimo', 'estoque baixo', 'falta o que']))
-    return respComprar(lojaLoja);
-
-  if (contem(t, ['boleto', 'a pagar', 'contas a pagar', 'vencendo', 'vencido']))
+  if (/\b(boleto|pagar|vencendo|vencido|vencimento|conta a pagar|despesa)/.test(t))
     return respBoletos(lojaLoja);
 
-  const mEst = t.match(/(?:quanto tem de|estoque de|saldo de|quanto de)\s+(.+)/);
-  if (mEst) return respEstoque(lojaLoja, mEst[1]);
+  /* Pergunta sobre UM item vem antes da lista geral: "estoque de açúcar" tem
+     item e é consulta; "estoque baixo" não tem e é a lista de compras. */
+  const mEst = t.match(/(?:quanto tem de|quanto tem|estoque d[eoa]|estoque|saldo d[eoa]|saldo|quanto de|tem)\s+(.{3,})/);
+  const itemPedido = mEst && !/^(baixo|acabando|minimo|em falta|no minimo)/.test(mEst[1].trim());
+  if (itemPedido) return respEstoque(lojaLoja, mEst[1]);
+
+  if (/\b(comprar|compra|lista|abaixo do minimo|acabando|falta|repor|repos|estoque baixo)/.test(t))
+    return respComprar(lojaLoja);
 
   if (contem(t, ['menu', 'o que voce faz', 'ajuda', 'comandos']))
     return '🤖 *Assistente Nexor*\n\nPode me perguntar:\n' +

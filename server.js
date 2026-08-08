@@ -496,18 +496,31 @@ async function respComprar(lojaLoja) {
     ).join('\n') + (faltam.length > 25 ? `\n\n…e mais ${faltam.length - 25}.` : '');
 }
 
-/* ---- boletos a pagar ---- */
+/* ---- boletos a pagar ----
+   O codigo de barras vai em LINHA PROPRIA, sem negrito e sem pontuacao
+   colada: no WhatsApp, tocar e segurar copia a linha inteira. Se ele
+   viesse no meio do texto, o gerente teria que selecionar na mao. */
+function soNum(t) { return String(t || '').replace(/\D/g, ''); }
 async function respBoletos(lojaLoja) {
   const hoje = hojeSP();
   const { data } = await sb.from('lancamentos_financeiros')
-    .select('descricao,valor,vencimento,fornecedor_nome')
+    .select('descricao,valor,vencimento,fornecedor_nome,codigo_barras')
     .eq('loja_id', lojaLoja).eq('tipo', 'despesa').eq('pago', false)
     .lte('vencimento', hoje).order('vencimento');
   if (!data || !data.length) return '✅ Nenhum boleto vencido ou vencendo hoje.';
   const tot = data.reduce((a, l) => a + (Number(l.valor) || 0), 0);
-  return `💰 *A pagar até hoje* (${data.length})\n\n` + data.slice(0, 15).map(l =>
-    `• ${l.descricao} — R$ ${dinheiro(l.valor)} (venc. ${(l.vencimento || '').split('-').reverse().join('/')})`
-  ).join('\n') + `\n\nTotal: *R$ ${dinheiro(tot)}*`;
+  const comCB = data.filter(l => soNum(l.codigo_barras).length >= 44).length;
+  const linhas = data.slice(0, 15).map(l => {
+    const venc = (l.vencimento || '').split('-').reverse().join('/');
+    let t = `• ${l.descricao} — R$ ${dinheiro(l.valor)} (venc. ${venc})`;
+    const cb = soNum(l.codigo_barras);
+    if (cb.length >= 44) t += `\n${cb}`;
+    return t;
+  });
+  let msg = `💰 *A pagar até hoje* (${data.length})\n\n` + linhas.join('\n\n') +
+            `\n\nTotal: *R$ ${dinheiro(tot)}*`;
+  if (comCB) msg += `\n\n_Toque e segure no número para copiar._`;
+  return msg;
 }
 
 /* ---- checklist: grava a resposta ---- */

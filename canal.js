@@ -156,6 +156,36 @@ async function enviarPara({ canal, sessoes, lojaId, telefone, texto }) {
    cada mensagem. Normalizamos para o mesmo formato que o
    Baileys entrega, então o miolo do robô não distingue.
    ========================================================== */
+/* ==========================================================
+   AUDITORIA — ASSINATURA DO WEBHOOK DA META
+   O webhook nao conferia quem estava batendo na porta. Como o endereco e
+   publico e o Assistente descobre a loja pelo telefone de quem escreveu,
+   qualquer pessoa que soubesse a URL podia enviar um JSON forjado com o
+   numero do gerente e comandar o Assistente daquela loja: pedir relatorio,
+   lancar despesa, consultar faturamento.
+   A Meta assina cada envio com HMAC-SHA256 do corpo, usando o App Secret,
+   no cabecalho X-Hub-Signature-256. Agora conferimos antes de processar.
+   Comparacao em tempo constante, para nao vazar a chave pelo tempo de
+   resposta.
+   ========================================================== */
+const crypto = require('crypto');
+const META_SEGREDO = process.env.META_APP_SECRET || '';
+
+function assinaturaConfere(req) {
+  if (!META_SEGREDO) {
+    console.error('WEBHOOK RECUSADO: META_APP_SECRET não definido no Render.');
+    return false;
+  }
+  const veio = String(req.headers['x-hub-signature-256'] || '');
+  if (!veio.startsWith('sha256=')) return false;
+  const bruto = req.corpoBruto || Buffer.from(JSON.stringify(req.body || {}));
+  const nosso = 'sha256=' + crypto.createHmac('sha256', META_SEGREDO)
+    .update(bruto).digest('hex');
+  const a = Buffer.from(veio), b = Buffer.from(nosso);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 function rotasMeta(app, aoReceber) {
   /* a Meta confere a URL uma vez, antes de mandar qualquer coisa */
   app.get('/meta/webhook', (req, res) => {
@@ -167,6 +197,11 @@ function rotasMeta(app, aoReceber) {
   });
 
   app.post('/meta/webhook', async (req, res) => {
+    /* quem nao assina nao entra */
+    if (!assinaturaConfere(req)) {
+      console.error('webhook meta: assinatura inválida — descartado');
+      return res.sendStatus(403);
+    }
     /* responder rápido é obrigação: a Meta repete o que demora */
     res.sendStatus(200);
     try {

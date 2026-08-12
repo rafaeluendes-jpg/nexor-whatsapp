@@ -47,7 +47,16 @@ app.use(cors({
     return ok(new Error('origem não liberada'));
   }
 }));
-app.use(express.json({ limit: '2mb' }));
+/* ==========================================================
+   AUDITORIA — CORPO BRUTO PARA CONFERIR A ASSINATURA DA META
+   A Meta assina cada webhook com HMAC-SHA256 sobre o corpo EXATO da
+   requisicao. Depois que o express interpreta o JSON, o texto original se
+   perde e a conferencia fica impossivel. Por isso guardamos o bruto aqui.
+   ========================================================== */
+app.use(express.json({
+  limit: '2mb',
+  verify: (req, _res, buf) => { req.corpoBruto = buf; }
+}));
 
 const PORTA = process.env.PORT || 3000;
 /* aceita variações de nome, para não travar por erro de digitação */
@@ -169,9 +178,71 @@ async function autorizado(req) {
     const perfil = await perfilDoToken(cab.slice(7).trim());
     if (perfil) { req.perfil = perfil; return true; }
   }
-  if (!EXIGE_CHAVE) return true;        /* nenhuma chave configurada */
+  /* ==========================================================
+     AUDITORIA — SEM CHAVE NAO SE ABRE A PORTA
+     Antes, se CHAVE_API nao estivesse definida no Render, esta linha
+     devolvia TRUE e todas as rotas ficavam abertas para a internet:
+     conectar, desconectar e ENVIAR MENSAGEM em nome de qualquer loja.
+     Uma variavel de ambiente esquecida virava porta escancarada.
+     Agora, sem chave configurada, o robo recusa — e diz por que.
+     ========================================================== */
+  if (!EXIGE_CHAVE) {
+    console.error('RECUSADO: CHAVE_API não está definida. Defina nas variáveis do Render.');
+    return false;
+  }
   const c = req.headers['x-chave'] || req.query.chave;
   return !!CHAVE && c === CHAVE;
+}
+
+/* ==========================================================
+   AUDITORIA — LIMITE DE REQUISICOES
+   Nao havia limite nenhum: um laco disparando /enviar sairia mandando
+   mensagem em nome da loja ate a Meta bloquear o numero, ou gastaria a
+   cota da IA. Aqui e uma janela deslizante simples, por origem — sem
+   dependencia nova, que o robo roda em plano pequeno.
+   ========================================================== */
+const _janelas = new Map();
+function dentroDoLimite(chave, teto, janelaMs) {
+  const agora = Date.now();
+  const j = _janelas.get(chave) || { ini: agora, n: 0 };
+  if (agora - j.ini > janelaMs) { j.ini = agora; j.n = 0; }
+  j.n++;
+  _janelas.set(chave, j);
+  if (_janelas.size > 5000) {                    /* nao cresce sem fim */
+    for (const [k, v] of _janelas) if (agora - v.ini > janelaMs) _janelas.delete(k);
+  }
+  return j.n <= teto;
+}
+function limita(teto, janelaMs) {
+  return function (req, res, next) {
+    const quem = (req.perfil && req.perfil.loja_id)
+      || req.headers['x-chave'] || req.ip || 'anon';
+    if (!dentroDoLimite(req.path + '|' + quem, teto, janelaMs))
+      return res.status(429).json({ erro: 'muitas tentativas — aguarde um instante' });
+    next();
+  };
+}
+
+/* ==========================================================
+   AUDITORIA — RASTRO DAS OPERACOES SENSIVEIS
+   Enviar mensagem, conectar e desconectar uma loja nao deixavam registro.
+   Agora ficam em audit_log, com quem, qual loja e quando. Nunca grava
+   chave, token nem o conteudo da mensagem.
+   ========================================================== */
+async function registrarNoBanco(acao, req, extra) {
+  if (!sb) return;
+  try {
+    const p = req.perfil || {};
+    await sb.from('audit_log').insert({
+      loja_id: p.loja_id || (extra && extra.loja) || null,
+      usuario: p.id || null,
+      usuario_email: p.email || null,
+      cargo: p.cargo || 'robo',
+      tabela: 'whatsapp',
+      operacao: acao,
+      depois: { rota: req.path, ...(extra || {}) }
+    });
+  } catch (e) { /* registro nao pode derrubar a operacao */ }
 }
 
 async function protege(req, res, next) {
@@ -1182,7 +1253,7 @@ async function classificarPergunta(texto) {
 }
 
 /* teste da IA pelo navegador */
-app.get('/testeia', protege, async (req, res) => {
+app.get('/testeia', protege, limita(10, 60000), async (req, res) => {
   const pergunta = req.query.q || 'oi';
   const loja = req.query.loja || Object.keys(sessoes)[0] || 'suc_sfs';
   try {
@@ -1265,7 +1336,7 @@ setInterval(() => {
 }, 60 * 60 * 1000);
 
 /* rota para disparar na hora, para conferir sem esperar o prazo */
-app.post('/relatorio/:loja', protege, daMinhaLoja, async (req, res) => {
+app.post('/relatorio/:loja', protege, limita(20, 60000), daMinhaLoja, async (req, res) => {
   try {
     const dias = Number(req.query.dias) || 7;
     const r = await REL.gerarParaLoja(sb, req.params.loja, dias);
@@ -1316,7 +1387,8 @@ app.get('/', (_, res) => res.json({
 }));
 
 /* liga uma loja e devolve o QR */
-app.post('/conectar/:loja', protege, daMinhaLoja, async (req, res) => {
+app.post('/conectar/:loja', protege, limita(6, 60000), daMinhaLoja, async (req, res) => {
+  registrarNoBanco('conectar_whatsapp', req, { loja: req.params.loja });
   const loja = req.params.loja;
   try {
     console.log('[' + loja + '] pedido de conexao');
@@ -1362,7 +1434,8 @@ app.get('/estado/:loja', protege, daMinhaLoja, (req, res) => {
   res.json({ estado: s?.estado || 'desligado', qr: s?.qr || null, numero: s?.numero || null });
 });
 
-app.post('/desconectar/:loja', protege, daMinhaLoja, async (req, res) => {
+app.post('/desconectar/:loja', protege, limita(6, 60000), daMinhaLoja, async (req, res) => {
+  registrarNoBanco('desconectar_whatsapp', req, { loja: req.params.loja });
   const s = sessoes[req.params.loja];
   try { await s?.sock?.logout(); } catch (e) {}
   try { fs.rmSync(path.join(PASTA, String(req.params.loja)), { recursive: true, force: true }); } catch (e) {}
@@ -1396,7 +1469,8 @@ function podeEnviar(loja) {
   return true;
 }
 
-app.post('/enviar', protege, daMinhaLoja, async (req, res) => {
+app.post('/enviar', protege, limita(30, 60000), daMinhaLoja, async (req, res) => {
+  registrarNoBanco('enviar_mensagem', req, { loja: req.body && req.body.loja });
   const { loja, telefone, texto } = req.body || {};
   if (loja && !podeEnviar(loja)) {
     registrar({ ok: false, motivo: 'limite de envios por minuto atingido', loja });

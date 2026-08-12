@@ -17,3 +17,7 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
+      # AUDITORIA: sem este segredo o webhook da Meta e recusado por completo.
+      # Pegue em: Meta for Developers > seu app > Configuracoes > Basico > Chave secreta.
+      - key: META_APP_SECRET
+        sync: false

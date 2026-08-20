@@ -36,7 +36,11 @@ const ORIGENS = String(process.env.ORIGENS_LIBERADAS || '')
     'https://radiant-stardust-71e592.netlify.app',
     'https://rafaeluendes-jpg.github.io',
     'https://nexor.com.br',
-    'https://www.nexor.com.br'
+    'https://www.nexor.com.br',
+    /* o sistema mudou de dominio: joiagest.com.br. Fica aqui tambem, para
+       nao depender de ninguem lembrar da variavel no Render. */
+    'https://joiagest.com.br',
+    'https://www.joiagest.com.br'
   ]);
 app.use(cors({
   origin(origem, ok) {
@@ -161,7 +165,7 @@ async function perfilDoToken(token) {
 
     if (!sb) return null;
     const { data } = await sb.from('perfis')
-      .select('id, nome, cargo, loja_id').eq('id', u.id).maybeSingle();
+      .select('id, nome, cargo, loja_id, sucursal_ref').eq('id', u.id).maybeSingle();
     if (!data) return null;
 
     _cacheToken.set(token, { perfil: data, ate: agora + VIDA_CACHE });
@@ -255,14 +259,45 @@ async function protege(req, res, next) {
    logada em qualquer rede comandaria o WhatsApp de qualquer loja.
    Quem entrou pela chave fixa não tem perfil, e passa — é chamada de
    máquina, já autenticada pela chave. */
-function daMinhaLoja(req, res, next) {
+/* ==========================================================
+   O QUE CHEGA AQUI E A UNIDADE, NAO A EMPRESA
+
+   Esta conferencia comparava req.params.loja com perfil.loja_id. So que
+   loja_id e o uuid da EMPRESA, e o sistema manda a referencia da
+   UNIDADE — 'suc_mt1unhbx2xrb'. Nunca sao iguais: a resposta era sempre
+   403, e a tela mostrava "nao consegui falar com o robo" como se o
+   servidor estivesse fora do ar. O QR nunca chegava a ser gerado.
+
+   Agora vale qualquer um dos tres, e a unidade e conferida contra a
+   empresa de quem mandou — ninguem comanda o WhatsApp de outra rede:
+     1. veio o uuid da empresa (chamada antiga, continua valendo);
+     2. veio a unidade fixa do perfil;
+     3. veio uma unidade que pertence a empresa do perfil.
+   ========================================================== */
+const _cacheSuc = new Map();
+async function unidadeEhDaEmpresa(ref, lojaId) {
+  if (!sb || !ref || !lojaId) return false;
+  const chave = ref + '|' + lojaId;
+  const guardado = _cacheSuc.get(chave);
+  if (guardado && guardado.ate > Date.now()) return guardado.ok;
+  try {
+    const { data } = await sb.from('sucursais')
+      .select('id').eq('ref_local', ref).eq('loja_id', lojaId).maybeSingle();
+    const ok = !!data;
+    _cacheSuc.set(chave, { ok, ate: Date.now() + 60000 });
+    return ok;
+  } catch (e) { return false; }
+}
+async function daMinhaLoja(req, res, next) {
   const p = req.perfil;
   if (!p) return next();
   const pedida = String(req.params.loja || req.body?.loja || '').trim();
   if (!pedida) return next();
-  if (String(p.loja_id) !== pedida && p.cargo !== 'plataforma')
-    return res.status(403).json({ erro: 'esta loja não é sua' });
-  next();
+  if (p.cargo === 'plataforma') return next();
+  if (String(p.loja_id) === pedida) return next();
+  if (p.sucursal_ref && String(p.sucursal_ref) === pedida) return next();
+  if (await unidadeEhDaEmpresa(pedida, p.loja_id)) return next();
+  return res.status(403).json({ erro: 'esta loja não é sua' });
 }
 
 /* ---------- conexão de uma loja ---------- */

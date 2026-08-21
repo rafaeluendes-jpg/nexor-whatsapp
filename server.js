@@ -1330,13 +1330,51 @@ async function chamarGemini(sistema, msgs) {
   } catch (e) { console.log('gemini erro:', e.message); return null; }
 }
 
+/* ==========================================================
+   A CONFIGURACAO E PROCURADA PELO CODIGO DA UNIDADE
+
+   Dentro do robo, `lojaId` e sempre a referencia da unidade —
+   'suc_mt1unhbx2xrb'. Mas whatsapp_config.sucursal_id e o UUID da
+   unidade, e ref_local e que guarda a referencia. A busca por
+   sucursal_id nunca achava nada: a Carla respondia sem nome de loja,
+   sem regras e com o link de emergencia escrito no codigo — foi o
+   "Nao entendi bem 😅" com o endereco antigo do GitHub.
+
+   Agora procura pelos dois formatos e guarda por um minuto, para nao
+   consultar o banco a cada mensagem.
+   ========================================================== */
+const _cacheCfg = new Map();
 async function buscarCfg(lojaId) {
-  if (!sb) return {};
+  if (!sb || !lojaId) return {};
+  const guardado = _cacheCfg.get(lojaId);
+  if (guardado && guardado.ate > Date.now()) return guardado.cfg;
+  let cfg = {};
   try {
-    const { data } = await sb.from('whatsapp_config')
-      .select('*').eq('sucursal_id', lojaId).maybeSingle();
-    return data || {};
-  } catch (e) { return {}; }
+    const ehUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(lojaId));
+    if (ehUuid) {
+      const { data } = await sb.from('whatsapp_config')
+        .select('*').eq('sucursal_id', lojaId).maybeSingle();
+      cfg = data || {};
+    }
+    if (!cfg.id) {
+      /* o caminho normal: ref_local guarda 'wz_suc_...' */
+      const { data } = await sb.from('whatsapp_config')
+        .select('*').eq('ref_local', 'wz_' + lojaId).maybeSingle();
+      cfg = data || {};
+    }
+    if (!cfg.id) {
+      /* unidade nova: acha o uuid pela referencia e tenta de novo */
+      const { data: suc } = await sb.from('sucursais')
+        .select('id').eq('ref_local', lojaId).maybeSingle();
+      if (suc && suc.id) {
+        const { data } = await sb.from('whatsapp_config')
+          .select('*').eq('sucursal_id', suc.id).maybeSingle();
+        cfg = data || {};
+      }
+    }
+  } catch (e) { cfg = {}; }
+  _cacheCfg.set(lojaId, { cfg, ate: Date.now() + 60000 });
+  return cfg;
 }
 
 /* ---------- rotas ---------- */

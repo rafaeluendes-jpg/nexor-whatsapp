@@ -1037,17 +1037,54 @@ const TONS = {
 
 /* sabores disponíveis, lidos das fichas técnicas */
 let _saboresCache = { quando: 0, lista: [] };
+/* ==========================================================
+   O SABOR QUE ELA OFERECE E O QUE ESTA NO CARDAPIO
+
+   Antes vinha de fichas_tecnicas com `disponivel_hoje`. Duas coisas
+   davam errado: as 139 fichas estavam todas marcadas como disponiveis,
+   entao BASE CHOCOLATE virava sabor oferecido ao cliente; e a marca
+   `zero_acucar` nunca foi preenchida, entao ela nao sabia quais eram os
+   zero.
+
+   Agora a fonte e o grupo de sabores do cardapio — o mesmo que o
+   cliente ve ao montar o pote. Se a loja ainda nao montou esse grupo,
+   cai na ficha tecnica como antes, para nao ficar sem resposta.
+   Zero acucar sai do proprio nome: no cadastro da Jolo todo sabor sem
+   acucar tem "ZERO" no nome.
+   ========================================================== */
+function ehZero(nome) { return /\bzero\b/i.test(String(nome || '')); }
 async function carregarSabores() {
   if (!sb) return [];
   if (Date.now() - _saboresCache.quando < 3 * 60 * 1000) return _saboresCache.lista;
+  let lista = [];
   try {
-    const { data } = await sb.from('fichas_tecnicas')
-      .select('nome, zero_acucar, disponivel_hoje, lancamento')
-      .eq('disponivel_hoje', true).order('nome');
-    const lista = (data || []).filter(f => !/massa|base/i.test(f.nome || ''));
-    _saboresCache = { quando: Date.now(), lista };
-    return lista;
-  } catch (e) { return []; }
+    const { data: grupos } = await sb.from('grupos_opcoes')
+      .select('id,nome,ativo').eq('ativo', true);
+    const ids = (grupos || [])
+      .filter(g => /sabor/i.test(g.nome || ''))
+      .map(g => g.id);
+    if (ids.length) {
+      const { data } = await sb.from('opcoes')
+        .select('nome,ativo,grupo_id').in('grupo_id', ids).order('ordem');
+      lista = (data || [])
+        .filter(o => o.ativo !== false)
+        .map(o => ({ nome: o.nome, zero_acucar: ehZero(o.nome), lancamento: false }));
+    }
+  } catch (e) {}
+  if (!lista.length) {
+    try {
+      const { data } = await sb.from('fichas_tecnicas')
+        .select('nome, zero_acucar, disponivel_hoje, lancamento')
+        .eq('disponivel_hoje', true).order('nome');
+      lista = (data || [])
+        .filter(f => !/massa|base|calda|cascao|cascão/i.test(f.nome || ''))
+        .map(f => ({ nome: f.nome,
+                     zero_acucar: f.zero_acucar || ehZero(f.nome),
+                     lancamento: f.lancamento }));
+    } catch (e) { lista = []; }
+  }
+  _saboresCache = { quando: Date.now(), lista };
+  return lista;
 }
 async function responderSabores(t, link) {
   const sabores = await carregarSabores();

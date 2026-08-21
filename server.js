@@ -1053,6 +1053,72 @@ let _saboresCache = { quando: 0, lista: [] };
    acucar tem "ZERO" no nome.
    ========================================================== */
 function ehZero(nome) { return /\bzero\b/i.test(String(nome || '')); }
+
+/* ==========================================================
+   GLUTEN E LACTOSE SAIEM DA FICHA, SEGUINDO ATE A BASE
+
+   O cliente pergunta "quais gelatos tem gluten". A resposta esta na
+   ficha, mas nao no primeiro nivel: a ficha do sabor lista agua e a
+   BASE; o que tem gluten mora dentro da ficha DA BASE — e no caso do
+   JOLO VANILLA, dentro do cascao, que e um terceiro nivel.
+
+   Aqui a corrente e percorrida ate tres niveis e o resultado vira uma
+   linha pronta no contexto da Carla. Nao e chute: e o que esta escrito
+   na ficha. Onde a ficha nao disser, a regra manda ela confirmar com a
+   equipe em vez de arriscar.
+   ========================================================== */
+const GLUTEN = /(bis|bolacha|brownie|casca|farinha|bolo |chocotone|kitkat|oreo|gateau|champanhe|crocante|kinder|matilda|waffle|biscoit)/i;
+const LEITE  = /(leite|creme|nata|cream cheese|queijo|iogurte|ninho|chantil|manteiga|margarina|doce de leite|trufa)/i;
+let _alergCache = { quando: 0, texto: '' };
+
+async function alergenosTexto() {
+  if (Date.now() - _alergCache.quando < 10 * 60 * 1000) return _alergCache.texto;
+  if (!sb) return '';
+  try {
+    const { data: fichas } = await sb.from('fichas_tecnicas')
+      .select('id,nome,subgrupo_id');
+    const { data: itens } = await sb.from('ficha_itens').select('ficha_id,insumo_id');
+    const { data: insumos } = await sb.from('insumos').select('id,nome');
+    if (!fichas || !itens || !insumos) return '';
+
+    const nomeIns = {}; insumos.forEach(i => { nomeIns[i.id] = i.nome || ''; });
+    const porFicha = {};
+    itens.forEach(it => {
+      (porFicha[it.ficha_id] = porFicha[it.ficha_id] || []).push(nomeIns[it.insumo_id] || '');
+    });
+    const fichaPorNome = {};
+    fichas.forEach(f => { fichaPorNome[String(f.nome || '').trim().toLowerCase()] = f; });
+
+    function ingredientes(fid, nivel, vistos) {
+      if (nivel > 3 || !fid || vistos.has(fid)) return [];
+      vistos.add(fid);
+      let r = [];
+      for (const nome of (porFicha[fid] || [])) {
+        r.push(nome);
+        const sub = fichaPorNome[String(nome).trim().toLowerCase()];
+        if (sub) r = r.concat(ingredientes(sub.id, nivel + 1, vistos));
+      }
+      return r;
+    }
+
+    const sabores = fichas.filter(f =>
+      ['fs_artesanal', 'fs_sorbet', 'fs_zero_acucar'].indexOf(f.subgrupo_id) >= 0);
+    const comGluten = [], semLeite = [];
+    for (const f of sabores) {
+      const ings = ingredientes(f.id, 1, new Set());
+      if (ings.some(x => GLUTEN.test(x))) comGluten.push(f.nome);
+      else if (!ings.some(x => LEITE.test(x))) semLeite.push(f.nome);
+    }
+    const partes = [];
+    if (comGluten.length)
+      partes.push('Sabores COM glúten (conferido na ficha técnica): ' + comGluten.join(', ') +
+                  '. Os demais não levam ingrediente com glúten.');
+    if (semLeite.length)
+      partes.push('Sabores SEM leite: ' + semLeite.join(', ') + '.');
+    _alergCache = { quando: Date.now(), texto: partes.join('\n') };
+    return _alergCache.texto;
+  } catch (e) { return ''; }
+}
 async function carregarSabores() {
   if (!sb) return [];
   if (Date.now() - _saboresCache.quando < 3 * 60 * 1000) return _saboresCache.lista;
@@ -1192,6 +1258,7 @@ function agoraTexto() {
 async function montarContexto(cfg, link, nome, primeiraVez) {
   const est = await estadoDaLoja(cfg);
   const sabores = await carregarSabores();
+  const alerg = await alergenosTexto();
   const zonas   = await carregarZonas();
   const zonaTxt = zonas.filter(z => z.tipo !== 'padrao')
     .map(z => `${z.nome} (${z.cidade}): R$ ${dinheiro(z.taxa)}`).join('; ');
@@ -1231,7 +1298,7 @@ ${est.retirada ? `- Tempo para retirada hoje: cerca de ${est.retirada} minutos.`
 - Horário: ${(cfg?.texto_horario || est.horarioTxt || 'não informado').replace(/\n/g, ' ')}
 - Endereço: ${(cfg?.texto_endereco || est.endereco || 'não cadastrado — nesse caso diga que vai confirmar, não invente').replace(/\n/g, ' ')}
 - Pagamento: dinheiro, Pix, débito e crédito, pagos na entrega
-- Sabores tradicionais: ${norm.join(', ') || 'consultar no cardápio'}
+${alerg ? alerg + '\n' : ''}- Sabores tradicionais: ${norm.join(', ') || 'consultar no cardápio'}
 - Zero açúcar: ${zero.join(', ') || 'nenhum hoje'}
 - Lançamentos: ${novos.join(', ') || 'nenhum'}
 - Taxas de entrega: ${zonaTxt || 'variam por bairro'}

@@ -1074,20 +1074,73 @@ async function responderSabores(t, link) {
 
 /* Se a loja está aberta AGORA é estado, não é o horário escrito no cadastro.
    Sem isso a atendente dizia "estamos abertos" num feriado em que a loja fechou. */
+/* ==========================================================
+   ABERTO OU FECHADO SAI DO HORARIO DA UNIDADE
+
+   Isto lia `config_loja.loja_aberta`, que e uma chave manual da EMPRESA
+   inteira. Com ela ligada, a Carla dizia "a loja esta aberta" as nove da
+   manha de um domingo. O horario de verdade e o do cardapio daquela
+   unidade — o mesmo que o cliente ve na vitrine. Agora e ele que manda,
+   e a chave manual so vale como desempate quando nao ha horario.
+
+   O endereco e o horario escrito tambem passam a vir do cardapio, para
+   ela parar de responder "esta no cardapio" quando perguntam onde fica.
+   ========================================================== */
+function abertaPeloHorario(horarios) {
+  if (!Array.isArray(horarios) || !horarios.length) return null;
+  const d = new Date(Date.now() - 3 * 3600 * 1000);
+  const dia = d.getUTCDay();
+  const min = d.getUTCHours() * 60 + d.getUTCMinutes();
+  let achou = false;
+  for (const h of horarios) {
+    if (Number(h.dia) !== dia) continue;
+    achou = true;
+    if (h.fechado) continue;
+    const a = String(h.abre || '00:00').split(':');
+    const f = String(h.fecha || '23:59').split(':');
+    let ini = (+a[0]) * 60 + (+a[1]);
+    let fim = (+f[0]) * 60 + (+f[1]);
+    if (fim < ini) fim += 1440;               /* fecha depois da meia-noite */
+    if (min >= ini && min <= fim) return true;
+  }
+  return achou ? false : null;
+}
+function horarioEmTexto(horarios) {
+  if (!Array.isArray(horarios) || !horarios.length) return '';
+  const nomes = ['domingo','segunda','terça','quarta','quinta','sexta','sábado'];
+  return horarios
+    .slice().sort((x, y) => Number(x.dia) - Number(y.dia))
+    .map(h => h.fechado ? `${nomes[Number(h.dia)]}: fechado`
+                        : `${nomes[Number(h.dia)]}: ${h.abre} às ${h.fecha}`)
+    .join(' · ');
+}
 async function estadoDaLoja(cfg) {
-  const vazio = { aberta: null, entrega: null, retirada: null };
+  const vazio = { aberta: null, entrega: null, retirada: null, horarioTxt: '', endereco: '' };
   if (!sb || !cfg?.loja_id) return vazio;
+  const r = { ...vazio };
+  try {
+    const { data: cd } = await sb.from('cardapio_config')
+      .select('horarios,endereco,tempo_entrega,tempo_retirada,ativo')
+      .eq('sucursal_id', cfg.sucursal_id).maybeSingle();
+    if (cd) {
+      r.aberta = abertaPeloHorario(cd.horarios);
+      r.horarioTxt = horarioEmTexto(cd.horarios);
+      r.endereco = cd.endereco || '';
+      r.entrega = cd.tempo_entrega || null;
+      r.retirada = cd.tempo_retirada || null;
+    }
+  } catch (e) {}
   try {
     const { data } = await sb.from('config_loja')
       .select('loja_aberta,tempo_entrega,tempo_retirada')
       .eq('loja_id', cfg.loja_id).maybeSingle();
-    if (!data) return vazio;
-    return {
-      aberta: data.loja_aberta,
-      entrega: data.tempo_entrega,
-      retirada: data.tempo_retirada
-    };
-  } catch (e) { return vazio; }
+    if (data) {
+      if (r.aberta === null) r.aberta = data.loja_aberta;
+      if (!r.entrega) r.entrega = data.tempo_entrega;
+      if (!r.retirada) r.retirada = data.tempo_retirada;
+    }
+  } catch (e) {}
+  return r;
 }
 
 /* hora local, para ela saber que horas são de verdade */
@@ -1127,18 +1180,19 @@ async function montarContexto(cfg, link, nome, primeiraVez) {
 ${iaNome && apresenta && primeiraVez
   ? `ESTA É A PRIMEIRA MENSAGEM da conversa: comece se apresentando, algo como "Oi! Aqui é a ${iaNome}, da ${nome}" — e só depois responda o que a pessoa perguntou.`
   : (iaNome && apresenta ? 'A conversa já começou; não se apresente de novo.' : '')}
+${iaNome ? 'SEU NOME É ' + iaNome + '. Se perguntarem seu nome, com quem estão falando ou quem é você, responda "' + iaNome + '" — nunca "a atendente virtual" sem o nome.' : ''}
 Seu jeito de falar é ${tom}.
 
 INFORMAÇÕES REAIS DE HOJE (use apenas estas, nunca invente):
 - Agora são ${agoraTexto()} (horário de Brasília).
 - A loja está ${est.aberta === true ? 'ABERTA agora — pode receber pedido'
-   : est.aberta === false ? 'FECHADA agora — avise com gentileza e diga que anota para depois'
+   : est.aberta === false ? 'FECHADA agora — avise com gentileza, diga o horário em que abre e ofereça o cardápio para a pessoa já ir escolhendo'
    : 'com o estado não informado — vá pelo horário abaixo'}.
 ${est.entrega ? `- Tempo de entrega hoje: cerca de ${est.entrega} minutos.` : ''}
 ${est.retirada ? `- Tempo para retirada hoje: cerca de ${est.retirada} minutos.` : ''}
 - Link do cardápio: ${link}
-- Horário: ${(cfg?.texto_horario || 'todos os dias das 12h às 23h').replace(/\n/g, ' ')}
-- Endereço: ${(cfg?.texto_endereco || 'informar pelo cardápio').replace(/\n/g, ' ')}
+- Horário: ${(cfg?.texto_horario || est.horarioTxt || 'não informado').replace(/\n/g, ' ')}
+- Endereço: ${(cfg?.texto_endereco || est.endereco || 'não cadastrado — nesse caso diga que vai confirmar, não invente').replace(/\n/g, ' ')}
 - Pagamento: dinheiro, Pix, débito e crédito, pagos na entrega
 - Sabores tradicionais: ${norm.join(', ') || 'consultar no cardápio'}
 - Zero açúcar: ${zero.join(', ') || 'nenhum hoje'}

@@ -1180,17 +1180,51 @@ async function responderComIA(mensagem, tel, cfg, link, nome, primeiraVez) {
   historico[tel] = [...msgs, { role: 'assistant', content: resposta }].slice(-6);
   return resposta;
 }
+/* ==========================================================
+   MODELO DE IA ENVELHECE — E A CARLA EMUDECE JUNTO
+
+   Em 17/06/2026 a Groq aposentou de uma vez os quatro modelos que
+   estavam aqui: llama-3.3-70b-versatile, llama-3.1-8b-instant,
+   llama-4-scout e gemma2-9b-it. Todos passaram a responder 404
+   "model_not_found", a IA nunca respondia e a Carla caía no texto de
+   emergencia — o "Nao entendi bem" que o Rafael recebeu.
+
+   Duas mudancas: a lista abaixo passou a ser a atual, e se TODOS
+   falharem o robo pergunta a propria Groq quais existem hoje e usa o
+   primeiro que funcionar. Assim a proxima aposentadoria nao emudece a
+   atendente — no maximo troca de modelo sozinha.
+   ========================================================== */
 const MODELOS_GROQ = [
-  'llama-3.3-70b-versatile',
-  'llama-3.1-8b-instant',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-  'gemma2-9b-it'
+  'openai/gpt-oss-120b',
+  'qwen/qwen3.6-27b',
+  'openai/gpt-oss-20b'
 ];
+let _modelosVivos = null;
+async function modelosDaGroq() {
+  if (_modelosVivos) return _modelosVivos;
+  try {
+    const r = await fetch('https://api.groq.com/openai/v1/models', {
+      headers: { 'Authorization': 'Bearer ' + GROQ_KEY }
+    });
+    if (!r.ok) return [];
+    const d = await r.json();
+    _modelosVivos = (d.data || [])
+      .map(m => m.id)
+      .filter(id => !/whisper|tts|guard|prompt-?guard/i.test(id));
+    console.log('[IA] modelos disponiveis na Groq:', _modelosVivos.join(', '));
+    return _modelosVivos;
+  } catch (e) { return []; }
+}
 let _modeloBom = null;
 let ULTIMO_ERRO_IA = null;
 
-async function chamarGroq(sistema, msgs) {
-  const tentar = _modeloBom ? [_modeloBom, ...MODELOS_GROQ] : MODELOS_GROQ;
+async function chamarGroq(sistema, msgs, segundaVolta) {
+  const tentar = _modeloBom ? [_modeloBom, ...MODELOS_GROQ] : MODELOS_GROQ.slice();
+  /* todos os conhecidos falharam: pergunta a Groq o que existe hoje */
+  if (segundaVolta) {
+    const vivos = await modelosDaGroq();
+    for (const m of vivos) if (tentar.indexOf(m) < 0) tentar.push(m);
+  }
   for (const modelo of tentar) {
     try {
       const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -1218,6 +1252,12 @@ async function chamarGroq(sistema, msgs) {
       ULTIMO_ERRO_IA = modelo + ' -> ' + e.message;
       console.log('[IA] groq erro:', e.message);
     }
+  }
+  /* nenhum da lista serviu: uma segunda volta, agora com o que a Groq
+     disser que existe. So uma vez, para nao entrar em laco. */
+  if (!segundaVolta) {
+    _modeloBom = null;
+    return chamarGroq(sistema, msgs, true);
   }
   return null;
 }

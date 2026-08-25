@@ -1742,7 +1742,22 @@ function podeEnviar(loja) {
 
 app.post('/enviar', protege, limita(30, 60000), daMinhaLoja, async (req, res) => {
   registrarNoBanco('enviar_mensagem', req, { loja: req.body && req.body.loja });
-  const { loja, telefone, texto } = req.body || {};
+  /* ==========================================================
+     AVISO DE CLIENTE NAO PODE SAIR PELA META
+
+     A Meta so deixa enviar mensagem livre para quem escreveu para o
+     numero nas ultimas 24 horas. O cliente do delivery faz o pedido
+     pelo site e nunca escreveu — entao a Meta recusa, e o aviso de
+     "em preparo" / "saiu para entrega" nunca chegava. O erro aparecia
+     no PDV como "meta nao deixou enviar".
+
+     Quem fala com CLIENTE e a Carla (Baileys), que nao tem essa
+     restricao. Quem fala com GERENTE continua podendo usar a Meta,
+     porque o gerente conversa com o Assistente todo dia.
+
+     `destino` diz para quem e: 'cliente' obriga Baileys.
+     ========================================================== */
+  const { loja, telefone, texto, destino } = req.body || {};
   if (loja && !podeEnviar(loja)) {
     registrar({ ok: false, motivo: 'limite de envios por minuto atingido', loja });
     return res.status(429).json({ erro: 'muitos envios seguidos — tente em instantes' });
@@ -1758,6 +1773,13 @@ app.post('/enviar', protege, limita(30, 60000), daMinhaLoja, async (req, res) =>
      não chegava nada. Agora sai pela camada de canal, que escolhe o caminho. */
   const temBaileys = Object.keys(sessoes)
     .some(k => sessoes[k]?.sock && sessoes[k].estado === 'conectado');
+  const paraCliente = destino === 'cliente';
+  if (paraCliente && !temBaileys) {
+    registrar({ ok: false, motivo: 'aviso de cliente sem Carla conectada',
+      pedida: loja, telefone });
+    return res.status(409).json({
+      erro: 'a Carla está desconectada — o cliente não recebe aviso até ler o QR de novo' });
+  }
   if (!CANAL.metaPronta() && !temBaileys) {
     registrar({ ok: false, motivo: 'sem caminho de saida (nem Meta nem Baileys)',
       pedida: loja, telefone });
@@ -1766,7 +1788,8 @@ app.post('/enviar', protege, limita(30, 60000), daMinhaLoja, async (req, res) =>
   try {
     const num = String(telefone).replace(/\D/g, '');
     await CANAL.enviarPara({
-      canal: 'assistente', sessoes, lojaId: loja, telefone: num, texto
+      canal: paraCliente ? 'cliente' : 'assistente',
+      sessoes, lojaId: loja, telefone: num, texto
     });
     registrar({ ok: true, para: num, loja, inicio: texto.slice(0, 40) });
     if (sb) sb.from('whatsapp_mensagens').insert([{

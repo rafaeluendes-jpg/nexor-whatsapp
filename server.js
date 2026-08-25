@@ -526,8 +526,16 @@ function ehGestor(cfg, tel) {
   return t.endsWith(g.slice(-8)) && g.length >= 8;
 }
 
+const FUSO_PADRAO = 'America/Sao_Paulo';
+
 function hojeSP() {
-  return new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  /* mesma razao do horario da Carla: fuso por nome, nao subtracao na mao */
+  try{
+    return new Intl.DateTimeFormat('en-CA',{timeZone:FUSO_PADRAO,
+      year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  }catch(e){
+    return new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+  }
 }
 
 /* ---- faturamento do dia ---- */
@@ -689,10 +697,9 @@ async function cobrarRotinas() {
     if (!cfgs || !cfgs.length) return;
 
     const hoje = hojeSP();
-    const agora = new Date(Date.now() - 3 * 3600 * 1000);
-    const hm = String(agora.getUTCHours()).padStart(2, '0') + ':' +
-               String(agora.getUTCMinutes()).padStart(2, '0');
-    const diaSem = agora.getUTCDay() === 0 ? 7 : agora.getUTCDay();
+    const _ag = agoraNaUnidade();
+    const hm = String(_ag.hh).padStart(2, '0') + ':' + String(_ag.mm).padStart(2, '0');
+    const diaSem = _ag.dia === 0 ? 7 : _ag.dia;
 
     /* Duas lojas com o MESMO gestor recebiam a mesma pergunta duas vezes.
        A cobrança é para a pessoa, não para a loja: quem já foi avisado
@@ -1189,23 +1196,88 @@ async function responderSabores(t, link) {
    O endereco e o horario escrito tambem passam a vir do cardapio, para
    ela parar de responder "esta no cardapio" quando perguntam onde fica.
    ========================================================== */
-function abertaPeloHorario(horarios) {
+/* ==========================================================
+   ITEM 8 — O RELOGIO DA UNIDADE, POR NOME DE FUSO
+
+   Antes: `new Date(Date.now() - 3*3600*1000)` — tres horas fixas
+   subtraidas na mao. Funciona hoje porque o Brasil nao tem mais horario
+   de verao, mas e uma conta escrita no codigo: se o horario de verao
+   voltar, ou se uma unidade abrir em outro fuso (Acre, Fernando de
+   Noronha), a Carla passa a responder com uma hora de diferenca e
+   ninguem liga uma coisa a outra.
+
+   Agora o fuso e nomeado (America/Sao_Paulo por padrao, e cada unidade
+   pode ter o seu). Quem faz a conversao e o proprio sistema, que sabe
+   das regras de cada fuso.
+   ========================================================== */
+
+function agoraNaUnidade(fuso) {
+  const tz = fuso || FUSO_PADRAO;
+  let p;
+  try {
+    p = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour12: false,
+      weekday: 'short', hour: '2-digit', minute: '2-digit'
+    }).formatToParts(new Date());
+  } catch (e) {
+    /* fuso invalido no cadastro nao pode derrubar o atendimento */
+    p = new Intl.DateTimeFormat('en-US', {
+      timeZone: FUSO_PADRAO, hour12: false,
+      weekday: 'short', hour: '2-digit', minute: '2-digit'
+    }).formatToParts(new Date());
+  }
+  const get = t => (p.find(x => x.type === t) || {}).value;
+  const semana = { Sun:0, Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6 };
+  const dia = semana[get('weekday')];
+  let hh = parseInt(get('hour'), 10); if (hh === 24) hh = 0;   /* meia-noite */
+  const mm = parseInt(get('minute'), 10);
+  return { dia, min: hh * 60 + mm, hh, mm };
+}
+
+function faixaDoDia(horarios, dia) {
+  return horarios.filter(h => Number(h.dia) === dia);
+}
+
+function abertaPeloHorario(horarios, fuso) {
   if (!Array.isArray(horarios) || !horarios.length) return null;
-  const d = new Date(Date.now() - 3 * 3600 * 1000);
-  const dia = d.getUTCDay();
-  const min = d.getUTCHours() * 60 + d.getUTCMinutes();
+  const ag = agoraNaUnidade(fuso);
   let achou = false;
-  for (const h of horarios) {
-    if (Number(h.dia) !== dia) continue;
+
+  /* 1) o dia de hoje */
+  for (const h of faixaDoDia(horarios, ag.dia)) {
     achou = true;
     if (h.fechado) continue;
     const a = String(h.abre || '00:00').split(':');
     const f = String(h.fecha || '23:59').split(':');
-    let ini = (+a[0]) * 60 + (+a[1]);
+    const ini = (+a[0]) * 60 + (+a[1]);
     let fim = (+f[0]) * 60 + (+f[1]);
     if (fim < ini) fim += 1440;               /* fecha depois da meia-noite */
-    if (min >= ini && min <= fim) return true;
+    if (ag.min >= ini && ag.min <= fim) return true;
   }
+
+  /* 2) ==========================================================
+        A MADRUGADA PERTENCE AO DIA ANTERIOR
+
+        Se a segunda vai das 12:00 as 02:00, a uma da manha de TERCA a
+        loja esta aberta — mas quem esta aberto e o turno de segunda. O
+        codigo antigo so olhava o dia corrente: somava 1440 ao horario
+        de fechamento e nunca chegava a usar essa soma, porque as 01:00
+        de terca ele consultava a faixa de terca.
+
+        Aqui olhamos o dia anterior e perguntamos se o turno dele ainda
+        alcanca esta hora.
+        ========================================================== */
+  const ontem = (ag.dia + 6) % 7;
+  for (const h of faixaDoDia(horarios, ontem)) {
+    if (h.fechado) continue;
+    const a = String(h.abre || '00:00').split(':');
+    const f = String(h.fecha || '23:59').split(':');
+    const ini = (+a[0]) * 60 + (+a[1]);
+    const fim = (+f[0]) * 60 + (+f[1]);
+    if (fim >= ini) continue;                 /* nao atravessa a meia-noite */
+    if (ag.min <= fim) return true;           /* ainda dentro do turno de ontem */
+  }
+
   return achou ? false : null;
 }
 function horarioEmTexto(horarios) {
@@ -1221,12 +1293,31 @@ async function estadoDaLoja(cfg) {
   const vazio = { aberta: null, entrega: null, retirada: null, horarioTxt: '', endereco: '' };
   if (!sb || !cfg?.loja_id) return vazio;
   const r = { ...vazio };
+  /* ==========================================================
+     ITEM 10 — EMPRESA CERTA, UNIDADE CERTA, SEMPRE
+
+     A consulta filtrava so por `sucursal_id`. Se esse campo viesse
+     vazio — configuracao incompleta, unidade recriada, cadastro pela
+     metade — o filtro deixava de existir e a consulta devolvia a
+     PRIMEIRA linha da tabela: o horario de outra unidade, possivelmente
+     de outra rede. A Carla responderia com toda a confianca o horario
+     da loja errada.
+
+     Agora: sem unidade nao se consulta nada. E o filtro leva tambem a
+     empresa (`loja_id`), para que nem uma coincidencia de identificador
+     possa cruzar dados entre redes.
+     ========================================================== */
+  if (!cfg.sucursal_id) {
+    console.warn('[carla] configuracao sem unidade — nao consulto horario de ninguem');
+    return r;
+  }
   try {
     const { data: cd } = await sb.from('cardapio_config')
       .select('horarios,endereco,tempo_entrega,tempo_retirada,ativo')
+      .eq('loja_id', cfg.loja_id)
       .eq('sucursal_id', cfg.sucursal_id).maybeSingle();
     if (cd) {
-      r.aberta = abertaPeloHorario(cd.horarios);
+      r.aberta = abertaPeloHorario(cd.horarios, cfg?.fuso);
       r.horarioTxt = horarioEmTexto(cd.horarios);
       r.endereco = cd.endereco || '';
       r.entrega = cd.tempo_entrega || null;
@@ -1247,12 +1338,12 @@ async function estadoDaLoja(cfg) {
 }
 
 /* hora local, para ela saber que horas são de verdade */
-function agoraTexto() {
-  const d = new Date(Date.now() - 3 * 3600 * 1000);
+function agoraTexto(fuso) {
   const dias = ['domingo','segunda-feira','terça-feira','quarta-feira',
                 'quinta-feira','sexta-feira','sábado'];
-  return `${dias[d.getUTCDay()]}, ${String(d.getUTCHours()).padStart(2,'0')}:` +
-         `${String(d.getUTCMinutes()).padStart(2,'0')}`;
+  const ag = agoraNaUnidade(fuso);
+  return `${dias[ag.dia]}, ${String(ag.hh).padStart(2,'0')}:` +
+         `${String(ag.mm).padStart(2,'0')}`;
 }
 
 async function montarContexto(cfg, link, nome, primeiraVez) {
@@ -1271,8 +1362,27 @@ async function montarContexto(cfg, link, nome, primeiraVez) {
   const regras = (cfg?.ia_regras || '').trim();
   const apresenta = cfg?.ia_apresenta !== false;
 
+  /* ==========================================================
+     ITEM 6 — UMA FONTE SO PARA O HORARIO
+
+     `texto_horario` e um campo livre da configuracao do robo, escrito a
+     mao. Ele vinha ANTES do horario real do cardapio nas duas listas: na
+     linha do horario e nas respostas prontas.
+
+     Resultado: bastava alguem ter digitado ali "seg a sab, 14h as 22h30"
+     uma vez para a Carla repetir esse texto para sempre — mesmo depois
+     de o horario ser alterado no painel. Painel salvava em um lugar,
+     robo respondia por outro. E exatamente a fonte dupla que nao pode
+     existir.
+
+     Agora quem manda e sempre o horario da unidade no cardapio. O texto
+     manual segue disponivel para observacoes ("feriados fechamos mais
+     cedo"), mas entra DEPOIS e identificado como observacao, nunca como
+     o horario em si.
+     ========================================================== */
   const prontas = [
-    cfg?.texto_horario   ? 'Horário: '   + cfg.texto_horario.replace(/\n/g,' ')   : '',
+    cfg?.texto_horario   ? 'Observação do lojista sobre horário (não substitui o horário acima): '
+                           + cfg.texto_horario.replace(/\n/g,' ')   : '',
     cfg?.texto_entrega   ? 'Entrega: '   + cfg.texto_entrega.replace(/\n/g,' ')   : '',
     cfg?.texto_pagamento ? 'Pagamento: ' + cfg.texto_pagamento.replace(/\n/g,' ') : '',
     cfg?.texto_endereco  ? 'Endereço: '  + cfg.texto_endereco.replace(/\n/g,' ')  : '',
@@ -1288,14 +1398,14 @@ ${iaNome ? 'SEU NOME É ' + iaNome + '. Se perguntarem seu nome, com quem estão
 Seu jeito de falar é ${tom}.
 
 INFORMAÇÕES REAIS DE HOJE (use apenas estas, nunca invente):
-- Agora são ${agoraTexto()} (horário de Brasília).
+- Agora são ${agoraTexto(cfg?.fuso)} (horário da loja).
 - A loja está ${est.aberta === true ? 'ABERTA agora — pode receber pedido'
    : est.aberta === false ? 'FECHADA agora — avise com gentileza, diga o horário em que abre e ofereça o cardápio para a pessoa já ir escolhendo'
    : 'com o estado não informado — vá pelo horário abaixo'}.
 ${est.entrega ? `- Tempo de entrega hoje: cerca de ${est.entrega} minutos.` : ''}
 ${est.retirada ? `- Tempo para retirada hoje: cerca de ${est.retirada} minutos.` : ''}
 - Link do cardápio: ${link}
-- Horário: ${(cfg?.texto_horario || est.horarioTxt || 'não informado').replace(/\n/g, ' ')}
+- Horário de funcionamento (FONTE ÚNICA — é o que está configurado no cardápio da unidade): ${(est.horarioTxt || cfg?.texto_horario || 'não informado').replace(/\n/g, ' ')}
 - Endereço: ${(cfg?.texto_endereco || est.endereco || 'não cadastrado — nesse caso diga que vai confirmar, não invente').replace(/\n/g, ' ')}
 - Pagamento: dinheiro, Pix, débito e crédito, pagos na entrega
 ${alerg ? alerg + '\n' : ''}- Sabores tradicionais: ${norm.join(', ') || 'consultar no cardápio'}

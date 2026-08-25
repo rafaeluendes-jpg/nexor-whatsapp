@@ -32,11 +32,19 @@ function soDigito(t) { return String(t || '').replace(/\D/g, ''); }
    antigos sem ele. Mandar para o número errado é mensagem que some. */
 function variacoesBR(tel) {
   const d = soDigito(tel);
-  const fora = [d];
+  const fora = [];
+  /* numero brasileiro sem o 55 e o caso mais comum no cadastro do cliente:
+     tentar ELE primeiro so gastava a primeira tentativa a toa */
+  if (!d.startsWith('55') && (d.length === 10 || d.length === 11)) fora.push('55' + d);
+  fora.push(d);
   if (d.startsWith('55') && d.length === 13) fora.push('55' + d.slice(2, 4) + d.slice(5));
   if (d.startsWith('55') && d.length === 12) fora.push('55' + d.slice(2, 4) + '9' + d.slice(4));
+  /* DDD sem o nono digito, e com ele */
+  if (!d.startsWith('55') && d.length === 10) fora.push('55' + d.slice(0, 2) + '9' + d.slice(2));
+  if (!d.startsWith('55') && d.length === 11 && d[2] === '9')
+    fora.push('55' + d.slice(0, 2) + d.slice(3));
   if (!d.startsWith('55')) fora.push('55' + d);
-  return [...new Set(fora)];
+  return [...new Set(fora.filter(Boolean))];
 }
 
 /* ---------- envio pela Meta ---------- */
@@ -122,17 +130,52 @@ async function enviarPergunta({ sessoes, lojaId, telefone, texto, botoes }) {
 }
 
 /* ---------- envio pelo Baileys ---------- */
+/* ==========================================================
+   "ENVIADA" NA TELA E NADA NO CELULAR DO CLIENTE
+
+   O cliente cadastra o telefone como 17997677339 — sem o 55. Esta
+   funcao tentava as variacoes em ordem e parava na primeira que nao
+   lancasse erro. Só que `sendMessage` para um numero que NAO EXISTE
+   no WhatsApp **nao lanca erro**: o servidor aceita o envio para um
+   destino inexistente e devolve sucesso.
+
+   Resultado: a primeira variacao (o numero cru, sem o 55) "dava
+   certo", a funcao retornava ok, o PDV escrevia "Confirmacao enviada"
+   — e a mensagem nunca chegava em lugar nenhum. As variacoes certas
+   nem chegavam a ser tentadas.
+
+   Agora perguntamos ao WhatsApp QUEM EXISTE antes de enviar
+   (`onWhatsApp`), e so mandamos para o numero confirmado. Se nenhuma
+   variacao existir, dizemos isso com todas as letras em vez de mentir
+   que enviou.
+   ========================================================== */
 async function enviarPeloBaileys(sessoes, lojaId, telefone, texto) {
   const s = sessoes[lojaId];
   if (!s || !s.sock || s.estado !== 'conectado')
     throw new Error('A loja não está conectada ao WhatsApp.');
-  for (const num of variacoesBR(telefone)) {
+
+  const tentativas = variacoesBR(telefone);
+  let confirmado = null;
+
+  /* pergunta ao WhatsApp qual das variacoes tem conta de verdade */
+  for (const num of tentativas) {
     try {
-      await s.sock.sendMessage(num + '@s.whatsapp.net', { text: texto });
-      return { por: 'baileys', numero: num };
-    } catch (e) { /* tenta a próxima variação */ }
+      const r = await s.sock.onWhatsApp(num + '@s.whatsapp.net');
+      const achou = Array.isArray(r) && r.find(x => x && x.exists);
+      if (achou) {
+        confirmado = String(achou.jid || (num + '@s.whatsapp.net')).split('@')[0];
+        break;
+      }
+    } catch (e) { /* consulta falhou: tenta a proxima */ }
   }
-  throw new Error('Não consegui entregar a mensagem.');
+
+  if (!confirmado) {
+    throw new Error('esse telefone não tem WhatsApp: ' + soDigito(telefone));
+  }
+
+  /* agora sim, envia — e o erro sobe se falhar, em vez de virar sucesso */
+  await s.sock.sendMessage(confirmado + '@s.whatsapp.net', { text: texto });
+  return { por: 'baileys', numero: confirmado };
 }
 
 /* ==========================================================

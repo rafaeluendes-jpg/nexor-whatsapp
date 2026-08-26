@@ -1486,6 +1486,65 @@ async function modelosDaGroq() {
 let _modeloBom = null;
 let ULTIMO_ERRO_IA = null;
 
+/* ==========================================================
+   O CLIENTE RECEBEU O RASCUNHO DA CARLA, NAO A RESPOSTA
+
+   Em 26/08/2026 um cliente mandou "Boa tarde" e recebeu de volta um
+   texto em INGLES comecando com <think>, explicando passo a passo como
+   a Carla deveria responder: "Analyze the Request", "Persona: Carla,
+   warm, welcoming", "Constraints: max 2 emojis". O raciocinio do
+   modelo foi entregue no lugar da resposta.
+
+   Causa: a lista de modelos foi trocada em junho, quando a Groq
+   aposentou os antigos. Os substitutos — gpt-oss e qwen3 — sao modelos
+   de RACIOCINIO: eles pensam em voz alta dentro de <think>...</think>
+   antes de responder. O codigo pegava `message.content` inteiro e
+   mandava para o WhatsApp.
+
+   E tem uma segunda camada, pior: `max_tokens` era 300. O raciocinio
+   consumia os 300 sozinho e a resposta de verdade nunca chegava a ser
+   escrita. Nao era so um texto feio na frente da resposta — em muitos
+   casos NAO HAVIA resposta.
+
+   Tres correcoes:
+
+   1. `reasoning_format: 'hidden'` pede a Groq para nao devolver o
+      raciocinio. E o conserto na origem.
+   2. `limparResposta()` remove qualquer bloco de raciocinio que passe
+      mesmo assim — vale para modelo novo que ninguem previu.
+   3. Se depois de limpar sobrar vazio ou algo que ainda parece
+      rascunho, o modelo e tratado como FALHA e o proximo e tentado.
+      Melhor trocar de modelo do que mandar rascunho ao cliente.
+
+   `max_tokens` subiu para 700: com raciocinio escondido a conta muda,
+   e 300 ficou apertado.
+   ========================================================== */
+function limparResposta(txt) {
+  if (!txt) return '';
+  let t = String(txt);
+  /* blocos de raciocinio, fechados ou nao */
+  t = t.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  t = t.replace(/<thinking>[\s\S]*?<\/thinking>/gi, '');
+  t = t.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
+  /* bloco aberto que nunca fechou: o modelo foi cortado no meio */
+  t = t.replace(/<think(?:ing)?>[\s\S]*$/i, '');
+  /* alguns modelos usam marcadores em vez de tag */
+  t = t.replace(/^[\s\S]*?<\|(?:end_of_thought|assistant)\|>/i, '');
+  return t.trim();
+}
+/* o que sobrou ainda parece rascunho, e nao resposta ao cliente? */
+function pareceRascunho(txt) {
+  if (!txt) return true;
+  const t = txt.trim();
+  if (t.length < 2) return true;
+  if (/^<think/i.test(t)) return true;
+  /* o rascunho vem em ingles e fala do proprio trabalho */
+  if (/here'?s (a |my )?(thinking|reasoning|plan)/i.test(t)) return true;
+  if (/\*\*?(Analyze the Request|Determine the Goal|Constraints|Persona)\*?\*?:/i.test(t)) return true;
+  if (/^(okay|alright|let me think|first,? I)/i.test(t) && /\bI (should|need to|must)\b/i.test(t)) return true;
+  return false;
+}
+
 async function chamarGroq(sistema, msgs, segundaVolta) {
   const tentar = _modeloBom ? [_modeloBom, ...MODELOS_GROQ] : MODELOS_GROQ.slice();
   /* todos os conhecidos falharam: pergunta a Groq o que existe hoje */
@@ -1500,7 +1559,9 @@ async function chamarGroq(sistema, msgs, segundaVolta) {
         headers: { 'Authorization': 'Bearer ' + GROQ_KEY, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: modelo,
           messages: [{ role: 'system', content: sistema }, ...msgs],
-          temperature: 0.6, max_tokens: 300 })
+          /* nao devolva o raciocinio: o cliente le o que vier daqui */
+          reasoning_format: 'hidden',
+          temperature: 0.6, max_tokens: 700 })
       });
       const txt = await r.text();
       if (!r.ok) {
@@ -1509,13 +1570,23 @@ async function chamarGroq(sistema, msgs, segundaVolta) {
         continue;
       }
       const d = JSON.parse(txt);
-      const resp = d.choices?.[0]?.message?.content?.trim();
-      if (resp) {
+      const bruto = d.choices?.[0]?.message?.content || '';
+      const resp = limparResposta(bruto);
+      if (resp && !pareceRascunho(resp)) {
         if (_modeloBom !== modelo) { _modeloBom = modelo; console.log('[IA] usando modelo', modelo); }
         ULTIMO_ERRO_IA = null;
         return resp;
       }
-      ULTIMO_ERRO_IA = modelo + ' -> resposta vazia';
+      /* rascunho nunca vai para o cliente: troca de modelo */
+      if (bruto && !resp) {
+        ULTIMO_ERRO_IA = modelo + ' -> so raciocinio, sem resposta (max_tokens?)';
+        console.log('[IA] descartado:', modelo, '- devolveu so o raciocinio');
+      } else if (resp) {
+        ULTIMO_ERRO_IA = modelo + ' -> resposta parece rascunho';
+        console.log('[IA] descartado:', modelo, '- resposta parece rascunho:', resp.slice(0, 80));
+      } else {
+        ULTIMO_ERRO_IA = modelo + ' -> resposta vazia';
+      }
     } catch (e) {
       ULTIMO_ERRO_IA = modelo + ' -> ' + e.message;
       console.log('[IA] groq erro:', e.message);
@@ -1551,7 +1622,9 @@ async function chamarIAExtrair(sistema, msgs, comFoto) {
       });
       if (!r.ok) { console.log('[extrair] ' + modelo + ' -> ' + r.status); continue; }
       const d = await r.json();
-      const resp = d.choices?.[0]?.message?.content?.trim();
+      /* aqui o raciocinio nao suja a conversa, mas quebra o JSON.parse
+         que vem depois: `<think>...` nao e JSON */
+      const resp = limparResposta(d.choices?.[0]?.message?.content || '');
       if (resp) return resp;
     } catch (e) { console.log('[extrair] erro:', e.message); }
   }
@@ -1634,7 +1707,15 @@ async function chamarGemini(sistema, msgs) {
           generationConfig: { temperature: 0.6, maxOutputTokens: 300 } }) });
     if (!r.ok) { console.log('gemini falhou:', r.status); return null; }
     const d = await r.json();
-    return d.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+    /* mesma limpeza da Groq: hoje o Gemini nao devolve raciocinio, mas o
+       modelo de amanha pode, e o preco de descobrir isso pelo cliente e
+       alto demais */
+    const resp = limparResposta(d.candidates?.[0]?.content?.parts?.[0]?.text || '');
+    if (!resp || pareceRascunho(resp)) {
+      console.log('gemini descartado: resposta vazia ou rascunho');
+      return null;
+    }
+    return resp;
   } catch (e) { console.log('gemini erro:', e.message); return null; }
 }
 

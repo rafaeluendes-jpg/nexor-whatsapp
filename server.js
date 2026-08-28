@@ -392,10 +392,31 @@ async function conectar(lojaId, forcar) {
 
       const tel = de.split('@')[0];
       const resposta = await montarResposta(lojaId, tel, texto, imagem);
-      if (resposta) {
+      /* ==========================================================
+         A ULTIMA PORTA ANTES DO CLIENTE
+
+         `limparResposta()` ja roda em cada chamada de modelo. Mesmo
+         assim a trava vem de novo AQUI, e de proposito: este e o unico
+         ponto por onde a resposta ao cliente sai. Caminho novo que
+         alguem escreva amanha passa por esta linha, queira ou nao.
+
+         Foi o que faltou em 26/08: a limpeza existia dentro de uma
+         funcao, e bastou um caminho nao passar por ela para o rascunho
+         chegar ao cliente. Trava que depende de todo caminho lembrar de
+         chama-la nao e trava.
+
+         Se o que sobrou parecer rascunho, NAO se manda nada. Silencio e
+         ruim; mandar o raciocinio da Carla em ingles para o cliente e
+         pior.
+         ========================================================== */
+      const limpa = limparResposta(resposta || '');
+      if (limpa && !pareceRascunho(limpa)) {
         await sock.sendPresenceUpdate('composing', de);
         await new Promise(r => setTimeout(r, 900));
-        await sock.sendMessage(de, { text: resposta });
+        await sock.sendMessage(de, { text: limpa });
+      } else if (resposta) {
+        console.error('[' + lojaId + '] resposta bloqueada na porta — parecia rascunho: ' +
+          String(resposta).slice(0, 160).replace(/\n/g, ' '));
       }
       if (sb) {
         await sb.from('whatsapp_mensagens').insert([{
@@ -1841,8 +1862,17 @@ CANAL.rotasMeta(app, async ({ telefone, texto, imagem }) => {
   } catch (e) { console.error('assistente meta:', e && e.message); }
 });
 
+/* ==========================================================
+   SABER O QUE ESTA NO AR
+
+   Em 28/08 o conserto do rascunho estava no GitHub e o cliente
+   continuava recebendo o texto em ingles. Nao havia como saber, de
+   fora, qual versao o servidor estava rodando — so dava para supor.
+   Agora da para abrir a raiz e ler.
+   ========================================================== */
+const VERSAO_ROBO = 'R2.0.0';
 app.get('/', (_, res) => res.json({
-  nome: 'Nexor WhatsApp', ok: true,
+  nome: 'Nexor WhatsApp', ok: true, versao: VERSAO_ROBO,
   lojas: Object.keys(sessoes).map(id => ({
     loja: id, estado: sessoes[id].estado, numero: sessoes[id].numero || null
   }))

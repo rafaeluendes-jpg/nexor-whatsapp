@@ -1180,6 +1180,62 @@ async function carregarSabores() {
   _saboresCache = { quando: Date.now(), lista };
   return lista;
 }
+/* ==========================================================
+   O QUE ELA OFERECE E O QUE ESTA NO CARDAPIO DIGITAL
+
+   A Carla so recebia a lista de SABORES. Formato — copo, cascao, pote,
+   milkshake — ela nunca recebeu, entao inventava: "copo, cascao, pote
+   500g ou 1kg". Na Santa Fe do Sul o cardapio digital tem quatro itens,
+   e nenhum deles e copo ou cascao: Gelato 500g, Gelato 1kg, Batido
+   300g e Batido 500g. Copo e cascao existem, mas so na frente de caixa.
+
+   Ela estava oferecendo ao cliente do WhatsApp uma coisa que o cliente
+   do WhatsApp nao pode pedir.
+
+   A regra do produto e a mesma do sistema (`disponivelNo`): produto sem
+   nenhum canal marcado vale em todo lugar; marcado, so vale onde esta
+   marcado. `online` e o nome antigo do campo `cardapio`. Estar marcado
+   em Delivery NAO poe o produto no cardapio digital — foi assim que a
+   Taxa de Entrega apareceu la.
+   ========================================================== */
+let _cardapioCache = { quando: 0, lista: [] };
+function noCardapioDigital(d) {
+  d = d || {};
+  const algum = d.pdv || d.delivery || d.online || d.cardapio || d.mesa || d.totem;
+  if (!algum) return true;
+  return !!(d.cardapio || d.online);
+}
+async function carregarCardapio() {
+  if (!sb) return [];
+  if (Date.now() - _cardapioCache.quando < 3 * 60 * 1000) return _cardapioCache.lista;
+  let lista = [];
+  try {
+    const { data: cats } = await sb.from('categorias').select('id,nome,ativo');
+    const nomeCat = {};
+    (cats || []).forEach(c => { nomeCat[c.id] = c.nome || ''; });
+    const { data } = await sb.from('produtos')
+      .select('nome,nome_online,preco,ativo,disponivel,categoria_id').order('ordem');
+    lista = (data || [])
+      .filter(p => p.ativo !== false && noCardapioDigital(p.disponivel))
+      .map(p => ({ nome: (p.nome_online || p.nome || '').trim(),
+                   preco: Number(p.preco) || 0,
+                   categoria: nomeCat[p.categoria_id] || '' }))
+      .filter(p => p.nome);
+  } catch (e) { lista = []; }
+  _cardapioCache = { quando: Date.now(), lista };
+  return lista;
+}
+/* vira as linhas que entram no contexto da Carla */
+function cardapioTexto(itens) {
+  if (!itens.length) return '';
+  const porCat = {};
+  itens.forEach(i => { (porCat[i.categoria || 'Outros'] = porCat[i.categoria || 'Outros'] || []).push(i); });
+  return Object.keys(porCat).map(c =>
+    `  ${c}: ` + porCat[c].map(i =>
+      i.preco ? `${i.nome} (R$ ${dinheiro(i.preco)})` : i.nome).join(', ')
+  ).join('\n');
+}
+
 async function responderSabores(t, link) {
   const sabores = await carregarSabores();
   if (!sabores.length) return null;
@@ -1371,6 +1427,7 @@ async function montarContexto(cfg, link, nome, primeiraVez) {
   const est = await estadoDaLoja(cfg);
   const sabores = await carregarSabores();
   const alerg = await alergenosTexto();
+  const cardapio = cardapioTexto(await carregarCardapio());
   const zonas   = await carregarZonas();
   const zonaTxt = zonas.filter(z => z.tipo !== 'padrao')
     .map(z => `${z.nome} (${z.cidade}): R$ ${dinheiro(z.taxa)}`).join('; ');
@@ -1429,7 +1486,10 @@ ${est.retirada ? `- Tempo para retirada hoje: cerca de ${est.retirada} minutos.`
 - Horário de funcionamento (FONTE ÚNICA — é o que está configurado no cardápio da unidade): ${(est.horarioTxt || cfg?.texto_horario || 'não informado').replace(/\n/g, ' ')}
 - Endereço: ${(cfg?.texto_endereco || est.endereco || 'não cadastrado — nesse caso diga que vai confirmar, não invente').replace(/\n/g, ' ')}
 - Pagamento: dinheiro, Pix, débito e crédito, pagos na entrega
-${alerg ? alerg + '\n' : ''}- Sabores tradicionais: ${norm.join(', ') || 'consultar no cardápio'}
+${alerg ? alerg + '\n' : ''}${cardapio ? `- O QUE O CLIENTE PODE PEDIR PELO WHATSAPP (é o cardápio digital, item por item — não existe nada além disto):
+${cardapio}
+  Copo, cascão, casquinha e afins só existem no balcão da loja: NÃO ofereça pelo WhatsApp.
+` : ''}- Sabores tradicionais: ${norm.join(', ') || 'consultar no cardápio'}
 - Zero açúcar: ${zero.join(', ') || 'nenhum hoje'}
 - Lançamentos: ${novos.join(', ') || 'nenhum'}
 - Taxas de entrega: ${zonaTxt || 'variam por bairro'}
@@ -1441,6 +1501,10 @@ COMO RESPONDER:
 - Quando fizer sentido, mande o link do cardápio.
 - NUNCA invente sabor, preço, taxa ou promoção. Se não souber, diga que vai
   confirmar com a equipe e peça um instante.
+- NUNCA invente tamanho, formato ou embalagem. Ao perguntar o que a pessoa quer,
+  use apenas os itens da lista acima, com o nome exato que está nela. Se a lista
+  não vier, pergunte só o sabor e mande o link — não chute "copo", "cascão",
+  "500g" nem "1kg".
 - Se perguntarem se está aberto, responda pelo ESTADO ACIMA, não pelo horário do
   cadastro. O estado é o que vale: a loja pode ter fechado mais cedo hoje.
 - Se a loja estiver fechada, não prometa entrega agora.
@@ -1870,7 +1934,7 @@ CANAL.rotasMeta(app, async ({ telefone, texto, imagem }) => {
    fora, qual versao o servidor estava rodando — so dava para supor.
    Agora da para abrir a raiz e ler.
    ========================================================== */
-const VERSAO_ROBO = 'R2.0.0';
+const VERSAO_ROBO = 'R2.1.0';
 app.get('/', (_, res) => res.json({
   nome: 'Nexor WhatsApp', ok: true, versao: VERSAO_ROBO,
   lojas: Object.keys(sessoes).map(id => ({

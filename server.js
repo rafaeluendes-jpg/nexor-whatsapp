@@ -496,6 +496,96 @@ async function limparSessaoBanco(lojaId) {
 /* ---------- respostas automáticas ---------- */
 const memoria = {};   /* telefone -> ultimo atendimento */
 
+/* ==========================================================
+   O ROBO TEM DE SABER A HORA DE CALAR A BOCA
+
+   29/08/2026, Santa Fe do Sul. Um cliente perguntou uma coisa atras da
+   outra, a Carla respondeu tudo, e quando ele escreveu "quero falar com
+   a atendente" ela respondeu de novo — como robo. Ninguem foi chamado,
+   e a conversa seguiu em circulo.
+
+   Duas coisas faltavam:
+
+   1. RECONHECER O PEDIDO DE GENTE. "Falar com atendente", "quero uma
+      pessoa", "me passa pro humano" e pedido de socorro, nao pergunta.
+      Merece uma frase — "so um minuto que ja vou chamar a atendente" —
+      e depois SILENCIO.
+
+   2. PARAR DE RESPONDER. Se o robo continua falando depois de prometer
+      chamar alguem, ele atrapalha o atendimento humano e faz o cliente
+      achar que ninguem veio. Por isso o telefone entra em pausa: pelos
+      proximos 30 minutos o robo nao responde nada daquela pessoa. Se o
+      atendente resolver, ninguem percebe a pausa; se demorar, o robo
+      volta sozinho, sem precisar de manutencao.
+
+   Tambem entra em pausa quem o robo nao entendeu DUAS vezes seguidas:
+   insistir uma terceira e so irritar. A segunda vez ja chama gente.
+   ========================================================== */
+const PAUSA_MIN = 30;
+const pausados = {};      /* telefone -> ate quando o robo fica quieto */
+const semEntender = {};   /* telefone -> quantas seguidas nao entendeu */
+
+function estaPausado(tel) {
+  const ate = pausados[tel] || 0;
+  if (ate > Date.now()) return true;
+  if (ate) delete pausados[tel];
+  return false;
+}
+function pausar(tel) {
+  pausados[tel] = Date.now() + PAUSA_MIN * 60 * 1000;
+  semEntender[tel] = 0;
+}
+/* a frase que o robo diz ao passar para uma pessoa. Se a loja escreveu
+   a dela nas respostas prontas (chave "atendente"), vale a da loja */
+function textoChamarAtendente(cfg) {
+  const pronta = (cfg && cfg.respostas || []).find(r =>
+    /atendente|humano|pessoa/i.test(String(r.chaves || '')));
+  const dele = pronta && String(pronta.resposta || '').trim();
+  return dele || 'Claro! Só um minuto que já vou chamar a atendente 😊';
+}
+/* ==========================================================
+   PROMETER CHAMAR ALGUEM E NAO CHAMAR E PIOR QUE NAO PROMETER
+
+   O robo diz "ja vou chamar a atendente" e se cala. Se ninguem na loja
+   souber que ha alguem esperando, o cliente fica falando sozinho por
+   trinta minutos. Entao o mesmo momento que gera a frase avisa o
+   gestor, no WhatsApp dele, com o numero e a ultima frase da pessoa.
+
+   Falha ao avisar nao pode derrubar a resposta ao cliente: o aviso e
+   melhor esforco, a resposta e obrigacao.
+   ========================================================== */
+async function avisarGestorAtendimento(lojaId, cfg, tel, texto) {
+  try {
+    const dest = soDigito(cfg && cfg.gestor_zap);
+    if (!dest) return;
+    const s = sessoes[lojaId];
+    if (!s || !s.sock || s.estado !== 'conectado') return;
+    await s.sock.sendMessage(dest + '@s.whatsapp.net', { text:
+      '🙋 *Cliente pediu atendimento humano*\n\n' +
+      'Número: +' + tel + '\n' +
+      'Última mensagem: "' + String(texto || '').slice(0, 140) + '"\n\n' +
+      'Respondi que a atendente já vem. Fiquei quieto por ' + PAUSA_MIN +
+      ' minutos para não atrapalhar.' });
+  } catch (e) { console.error('aviso de atendimento:', e && e.message); }
+}
+/* o pedido de falar com gente, escrito de todo jeito que aparece */
+function pedeAtendente(t) {
+  /* as variacoes com artigo saem primeiro: "falar com A atendente" foi
+     exatamente a frase que o cliente escreveu e que passou batido */
+  return contem(t, [
+    'falar com atendente','falar com um atendente','falar com uma atendente',
+    'falar com a atendente','falar com o atendente','com a atendente',
+    'com o atendente','com a atendende','falar com a moca','falar com a menina',
+    'quero atendente','chamar atendente','chama atendente','me passa pro atendente',
+    'falar com alguem','falar com uma pessoa','falar com uma pessoa de verdade',
+    'quero falar com alguem','atendimento humano','falar com humano',
+    'falar com o dono','falar com a dona','falar com o gerente','falar com a gerente',
+    'falar com o responsavel','quero uma pessoa','tem alguem ai','tem gente ai',
+    'nao quero falar com robo','nao quero robo','isso e um robo','voce e um robo',
+    'quero atendimento','me atende','atendente por favor','chama alguem'
+  ]);
+}
+
 /* tira acento, pontuação e espaço extra — o cliente escreve como quer */
 function limpar(s) {
   return String(s || '')
@@ -941,6 +1031,36 @@ async function montarResposta(lojaId, tel, texto, imagem, soAssistente) {
   }
 
   const t = limpar(texto);
+
+  /* ==========================================================
+     PAUSADO E PAUSADO
+
+     Depois de prometer chamar uma pessoa, o robo nao fala mais nada
+     com aquele numero — nem "oi", nem cardapio, nem sabor. Voltar a
+     responder no meio do atendimento humano e o que faz o cliente
+     achar que ninguem veio.
+
+     A unica coisa que atravessa a pausa e um novo pedido de atendente,
+     que so renova o silencio (e avisa o gestor de novo, porque
+     provavelmente ninguem foi).
+     ========================================================== */
+  if (estaPausado(tel)) {
+    if (pedeAtendente(t)) {
+      pausar(tel);
+      avisarGestorAtendimento(lojaId, cfg, tel, texto);
+      return textoChamarAtendente(cfg);
+    }
+    console.log('[' + lojaId + '] ' + tel + ' em atendimento humano — robo calado');
+    return null;
+  }
+
+  /* pedido de gente: uma frase, aviso ao gestor, e silencio */
+  if (pedeAtendente(t)) {
+    pausar(tel);
+    avisarGestorAtendimento(lojaId, cfg, tel, texto);
+    return textoChamarAtendente(cfg);
+  }
+
   const agora = Date.now();
   const ultima = memoria[tel] || 0;
   const primeiraVez = (agora - ultima) > 3 * 60 * 60 * 1000;   /* 3 horas */
@@ -956,11 +1076,27 @@ async function montarResposta(lojaId, tel, texto, imagem, soAssistente) {
   if (querIA) {
     if (GROQ_KEY || GEMINI_KEY) {
       const r = await responderComIA(texto, tel, cfg, link, nome, primeiraVez);
-      if (r) return r;
-      /* a IA não soube responder: ela mesma pede desculpa, sem passar a bola
-         para a resposta pronta e sair com outro tom no meio da conversa */
+      if (r) { semEntender[tel] = 0; return r; }
+      /* ==========================================================
+         NAO ENTENDER DUAS VEZES E HORA DE CHAMAR GENTE
+
+         Antes o robo respondia "Nao entendi bem, pode explicar de outro
+         jeito?" quantas vezes fosse preciso. Quem esta do outro lado
+         reformula, nao adianta, reformula de novo — e desiste da loja.
+
+         A primeira vez pede para reformular e manda o cardapio, que
+         resolve a maioria. Na SEGUNDA seguida, o robo para de tentar,
+         chama a atendente e se cala.
+         ========================================================== */
+      semEntender[tel] = (semEntender[tel] || 0) + 1;
+      if (semEntender[tel] >= 2) {
+        pausar(tel);
+        avisarGestorAtendimento(lojaId, cfg, tel, texto);
+        return `Acho melhor te passar para uma pessoa 😊\n\n` +
+               textoChamarAtendente(cfg);
+      }
       return `Não entendi bem 😅 Pode me explicar de outro jeito?\n\n` +
-             `Se preferir, o cardápio está aqui: ${link}`;
+             `Se preferir, é só montar o pedido aqui: ${link}`;
     }
     /* sem chave de IA configurada: as respostas prontas seguram, senão fica mudo */
     return respostaPronta(t, cfg, link, nome, primeiraVez);
@@ -1509,6 +1645,11 @@ COMO RESPONDER:
   cadastro. O estado é o que vale: a loja pode ter fechado mais cedo hoje.
 - Se a loja estiver fechada, não prometa entrega agora.
 - Para cancelamento ou reclamação, peça o número do pedido e avise que a equipe verifica.
+- Se a pessoa pedir para falar com alguém, com uma atendente, com o dono ou disser que
+  não quer falar com robô: NÃO tente resolver sozinha. Diga que já vai chamar a
+  atendente e pare por aí.
+- Se você não entender o que a pessoa quer, não fique repetindo a pergunta: mande o
+  link do cardápio para ela montar o pedido, ou diga que vai chamar a atendente.
 
 CONVERSA NATURAL:
 - Pode conversar de forma leve sobre o que a pessoa trouxer: o calor, o fim de
@@ -1934,7 +2075,7 @@ CANAL.rotasMeta(app, async ({ telefone, texto, imagem }) => {
    fora, qual versao o servidor estava rodando — so dava para supor.
    Agora da para abrir a raiz e ler.
    ========================================================== */
-const VERSAO_ROBO = 'R2.1.0';
+const VERSAO_ROBO = 'R2.2.0';
 app.get('/', (_, res) => res.json({
   nome: 'Nexor WhatsApp', ok: true, versao: VERSAO_ROBO,
   lojas: Object.keys(sessoes).map(id => ({

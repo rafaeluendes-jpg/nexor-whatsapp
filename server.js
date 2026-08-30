@@ -1117,7 +1117,7 @@ async function respostaPronta(t, cfg, link, nome, primeiraVez) {
   if (contem(t, ['sabor','sabores','qual tem','que tem','tem hoje','disponivel','disponiveis',
       'zero','diet','sem acucar','diabetico','diabetes','light','lancamento','novidade',
       'novo sabor','cardapio de sabores','tem de que'])) {
-    const resp = await responderSabores(t, link);
+    const resp = responderSabores(t, link);
     if (resp) return resp;
   }
   const zona = await acharZona(t);
@@ -1199,24 +1199,20 @@ const TONS = {
   formal:    'cordial e respeitoso, um pouco mais formal'
 };
 
-/* sabores disponíveis, lidos das fichas técnicas */
-let _saboresCache = { quando: 0, lista: [] };
 /* ==========================================================
-   O SABOR QUE ELA OFERECE E O QUE ESTA NO CARDAPIO
+   A CARLA NAO FALA NOME DE SABOR
 
-   Antes vinha de fichas_tecnicas com `disponivel_hoje`. Duas coisas
-   davam errado: as 139 fichas estavam todas marcadas como disponiveis,
-   entao BASE CHOCOLATE virava sabor oferecido ao cliente; e a marca
-   `zero_acucar` nunca foi preenchida, entao ela nao sabia quais eram os
-   zero.
+   Ela ja teve duas fontes de sabores: a ficha tecnica e, depois, o
+   grupo de sabores do cardapio. As duas foram removidas em 30/08/2026,
+   por ordem da loja. O motivo e simples e vale mais do que qualquer
+   fonte: a lista muda com a producao do dia, e sabor citado no
+   WhatsApp que ja acabou vira reclamacao no balcao.
 
-   Agora a fonte e o grupo de sabores do cardapio — o mesmo que o
-   cliente ve ao montar o pote. Se a loja ainda nao montou esse grupo,
-   cai na ficha tecnica como antes, para nao ficar sem resposta.
-   Zero acucar sai do proprio nome: no cadastro da Jolo todo sabor sem
-   acucar tem "ZERO" no nome.
+   Quem pergunta de sabor recebe o LINK do cardapio, que esta sempre
+   certo e de onde a pessoa ja monta o pedido. Isso vale para a
+   resposta pronta e para a IA — o contexto dela nao recebe mais
+   nenhum nome de sabor, e a regra escrita proibe dizer um.
    ========================================================== */
-function ehZero(nome) { return /\bzero\b/i.test(String(nome || '')); }
 
 /* ==========================================================
    GLUTEN E LACTOSE SAIEM DA FICHA, SEGUINDO ATE A BASE
@@ -1283,39 +1279,10 @@ async function alergenosTexto() {
     return _alergCache.texto;
   } catch (e) { return ''; }
 }
-async function carregarSabores() {
-  if (!sb) return [];
-  if (Date.now() - _saboresCache.quando < 3 * 60 * 1000) return _saboresCache.lista;
-  let lista = [];
-  try {
-    const { data: grupos } = await sb.from('grupos_opcoes')
-      .select('id,nome,ativo').eq('ativo', true);
-    const ids = (grupos || [])
-      .filter(g => /sabor/i.test(g.nome || ''))
-      .map(g => g.id);
-    if (ids.length) {
-      const { data } = await sb.from('opcoes')
-        .select('nome,ativo,grupo_id').in('grupo_id', ids).order('ordem');
-      lista = (data || [])
-        .filter(o => o.ativo !== false)
-        .map(o => ({ nome: o.nome, zero_acucar: ehZero(o.nome), lancamento: false }));
-    }
-  } catch (e) {}
-  if (!lista.length) {
-    try {
-      const { data } = await sb.from('fichas_tecnicas')
-        .select('nome, zero_acucar, disponivel_hoje, lancamento')
-        .eq('disponivel_hoje', true).order('nome');
-      lista = (data || [])
-        .filter(f => !/massa|base|calda|cascao|cascão/i.test(f.nome || ''))
-        .map(f => ({ nome: f.nome,
-                     zero_acucar: f.zero_acucar || ehZero(f.nome),
-                     lancamento: f.lancamento }));
-    } catch (e) { lista = []; }
-  }
-  _saboresCache = { quando: Date.now(), lista };
-  return lista;
-}
+/* `carregarSabores` e `ehZero` moravam aqui: liam os sabores do grupo do
+   cardapio para a Carla recitar. Ninguem mais recita sabor — quem
+   pergunta recebe o link — entao as duas sairam junto com a lista. O
+   `alergenosTexto` acima continua: alergia nao se resolve com link. */
 /* ==========================================================
    O QUE ELA OFERECE E O QUE ESTA NO CARDAPIO DIGITAL
 
@@ -1372,27 +1339,31 @@ function cardapioTexto(itens) {
   ).join('\n');
 }
 
-async function responderSabores(t, link) {
-  const sabores = await carregarSabores();
-  if (!sabores.length) return null;
-  const zero   = sabores.filter(s => s.zero_acucar);
-  const normais= sabores.filter(s => !s.zero_acucar && !s.lancamento);
-  const novos  = sabores.filter(s => s.lancamento);
-  const lista  = arr => arr.map(s => '• ' + s.nome).join('\n');
+/* ==========================================================
+   SABOR NAO SE LISTA NO WHATSAPP — MANDA O LINK
 
+   Ate aqui a Carla despejava a lista inteira de sabores na conversa,
+   separada em tradicionais, zero acucar e lancamentos. Tres problemas
+   de uma vez: e um textao no celular do cliente; a lista envelhece
+   entre a producao do dia e a resposta; e ela cita sabor que pode ter
+   acabado, o que vira reclamacao no balcao.
+
+   Ordem do Rafael em 30/08/2026: nao falar nome de sabor nenhum.
+   Perguntou de sabor, a resposta e o link — la esta tudo, sempre
+   atualizado, e do link a pessoa ja monta o pedido.
+
+   A pergunta continua sendo reconhecida (zero acucar, lancamento,
+   "qual tem"), so a resposta mudou: reconhecer serve para responder o
+   link em vez de cair no "nao entendi".
+   ========================================================== */
+function responderSabores(t, link) {
   if (contem(t, ['zero','diet','sem acucar','diabetico','diabetes','light'])) {
-    if (!zero.length) return 'Hoje não temos sabores zero açúcar 😔\n\nVeja o cardápio:\n' + link;
-    return 'Nossos *zero açúcar* de hoje 🍨\n\n' + lista(zero) +
-      '\n\nPeça aqui:\n' + link;
+    return 'Temos sim, e o que tem hoje está tudo no cardápio 🍨\n\n' +
+      'É só acessar aqui:\n' + link;
   }
-  if (contem(t, ['lancamento','novidade','novo','nova','recente'])) {
-    if (!novos.length) return null;
-    return 'Nossos *lançamentos* ✨\n\n' + lista(novos) + '\n\nPeça aqui:\n' + link;
-  }
-  let r = '*Sabores de hoje* 🍨\n\n' + lista(normais);
-  if (novos.length) r += '\n\n*Lançamentos* ✨\n' + lista(novos);
-  if (zero.length)  r += '\n\n*Zero açúcar*\n' + lista(zero);
-  return r + '\n\nOs sabores mudam conforme a produção do dia.\n\nPeça aqui:\n' + link;
+  return 'Todos os nossos sabores estão no cardápio 🍨\n\n' +
+    'É só acessar aqui:\n' + link + '\n\n' +
+    'Lá você vê o que tem hoje e já monta seu pedido.';
 }
 
 /* Se a loja está aberta AGORA é estado, não é o horário escrito no cadastro.
@@ -1561,16 +1532,11 @@ function agoraTexto(fuso) {
 
 async function montarContexto(cfg, link, nome, primeiraVez) {
   const est = await estadoDaLoja(cfg);
-  const sabores = await carregarSabores();
   const alerg = await alergenosTexto();
   const cardapio = cardapioTexto(await carregarCardapio());
   const zonas   = await carregarZonas();
   const zonaTxt = zonas.filter(z => z.tipo !== 'padrao')
     .map(z => `${z.nome} (${z.cidade}): R$ ${dinheiro(z.taxa)}`).join('; ');
-  const norm  = sabores.filter(s => !s.zero_acucar && !s.lancamento).map(s => s.nome);
-  const zero  = sabores.filter(s => s.zero_acucar).map(s => s.nome);
-  const novos = sabores.filter(s => s.lancamento).map(s => s.nome);
-
   const iaNome = (cfg?.ia_nome || '').trim();
   const tom = TONS[cfg?.ia_tom] || TONS.acolhedor;
   const regras = (cfg?.ia_regras || '').trim();
@@ -1625,9 +1591,8 @@ ${est.retirada ? `- Tempo para retirada hoje: cerca de ${est.retirada} minutos.`
 ${alerg ? alerg + '\n' : ''}${cardapio ? `- O QUE O CLIENTE PODE PEDIR PELO WHATSAPP (é o cardápio digital, item por item — não existe nada além disto):
 ${cardapio}
   Copo, cascão, casquinha e afins só existem no balcão da loja: NÃO ofereça pelo WhatsApp.
-` : ''}- Sabores tradicionais: ${norm.join(', ') || 'consultar no cardápio'}
-- Zero açúcar: ${zero.join(', ') || 'nenhum hoje'}
-- Lançamentos: ${novos.join(', ') || 'nenhum'}
+` : ''}- SABORES: você NÃO tem a lista e NÃO deve ter. Quem pergunta de sabor
+  recebe o link do cardápio — lá está tudo e sempre atualizado.
 - Taxas de entrega: ${zonaTxt || 'variam por bairro'}
 ${prontas ? `\nRESPOSTAS QUE A LOJA DEIXOU PRONTAS (use o conteúdo, com suas palavras):\n${prontas}` : ''}
 ${regras ? `\nREGRAS DA LOJA (siga sempre):\n${regras}\n` : ''}
@@ -1635,7 +1600,12 @@ COMO RESPONDER:
 - Português do Brasil, no máximo 3 frases curtas. Nada de textão.
 - Um emoji, no máximo dois.
 - Quando fizer sentido, mande o link do cardápio.
-- NUNCA invente sabor, preço, taxa ou promoção. Se não souber, diga que vai
+- NUNCA diga o nome de um sabor. Nem para confirmar, nem para sugerir, nem
+  para dizer que acabou — nem que a pessoa insista ou cite um sabor. Perguntou
+  de sabor (qual tem, zero açúcar, lançamento, "tem de morango?"), a resposta é
+  sempre a mesma: está tudo no cardápio, e manda o link. A lista muda com a
+  produção do dia; qualquer nome que você disser pode já ter acabado.
+- NUNCA invente preço, taxa ou promoção. Se não souber, diga que vai
   confirmar com a equipe e peça um instante.
 - NUNCA invente tamanho, formato ou embalagem. Ao perguntar o que a pessoa quer,
   use apenas os itens da lista acima, com o nome exato que está nela. Se a lista
@@ -2075,7 +2045,7 @@ CANAL.rotasMeta(app, async ({ telefone, texto, imagem }) => {
    fora, qual versao o servidor estava rodando — so dava para supor.
    Agora da para abrir a raiz e ler.
    ========================================================== */
-const VERSAO_ROBO = 'R2.2.0';
+const VERSAO_ROBO = 'R2.3.0';
 app.get('/', (_, res) => res.json({
   nome: 'Nexor WhatsApp', ok: true, versao: VERSAO_ROBO,
   lojas: Object.keys(sessoes).map(id => ({

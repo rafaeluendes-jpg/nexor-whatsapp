@@ -1313,7 +1313,22 @@ async function carregarCardapio() {
   if (Date.now() - _cardapioCache.quando < 3 * 60 * 1000) return _cardapioCache.lista;
   let lista = [];
   try {
-    const { data: cats } = await sb.from('categorias').select('id,nome,ativo');
+    /* ==========================================================
+       A COLUNA CHAMA `ativa`, NAO `ativo` — E ISSO ZERAVA O CARDAPIO
+
+       Esta consulta pedia `ativo`. A coluna de `categorias` e `ativa`.
+       O PostgREST devolve 400, o `catch` la embaixo faz `lista = []`, e a
+       Carla passava a atender SEM CARDAPIO NENHUM — sem saber um sabor,
+       sem saber um preco. Silencioso: nenhum aviso, nenhum log.
+
+       Medido no registro do banco em 01/09/2026: treze 400 neste mesmo
+       caminho so no dia, todos do servidor do robo.
+
+       O campo nem era usado: destas linhas so sai `nomeCat[id] = nome`.
+       Agora a consulta pede so o que le, e nao ha nome de coluna para
+       errar de novo.
+       ========================================================== */
+    const { data: cats } = await sb.from('categorias').select('id,nome');
     const nomeCat = {};
     (cats || []).forEach(c => { nomeCat[c.id] = c.nome || ''; });
     const { data } = await sb.from('produtos')

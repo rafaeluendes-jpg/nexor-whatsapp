@@ -28,8 +28,8 @@ export type ItemNav = {
 
 export const itensNav: ItemNav[] = [
   { rotulo: 'Início', para: '/', icone: LayoutDashboard, principal: true },
-  { rotulo: 'Obras', para: '/obras', icone: HardHat, principal: true, emBreve: true },
-  { rotulo: 'Clientes', para: '/clientes', icone: Users, emBreve: true },
+  { rotulo: 'Obras', para: '/obras', icone: HardHat, principal: true },
+  { rotulo: 'Clientes', para: '/clientes', icone: Users, principal: true },
   { rotulo: 'Cronograma', para: '/cronograma', icone: CalendarRange, principal: true, emBreve: true },
   { rotulo: 'Etapas', para: '/etapas', icone: ListChecks, emBreve: true },
   { rotulo: 'Financeiro', para: '/financeiro', icone: Wallet, principal: true, emBreve: true },

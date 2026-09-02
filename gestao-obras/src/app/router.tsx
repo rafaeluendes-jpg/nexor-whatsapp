@@ -11,6 +11,8 @@ import { EmBrevePage } from '@/shared/components/layout/em-breve-page'
 import { itensNav } from '@/shared/components/layout/nav-items'
 import { DashboardPage } from '@/modules/dashboard/pages/dashboard-page'
 import { ConfiguracoesPage } from '@/modules/configuracoes/pages/configuracoes-page'
+import { rotasObras } from '@/modules/obras/rotas'
+import { rotasClientes } from '@/modules/clientes/rotas'
 import { ErroPage } from './erro-page'
 
 export const router = createBrowserRouter([
@@ -40,6 +42,8 @@ export const router = createBrowserRouter([
         children: [
           { index: true, element: <DashboardPage /> },
           { path: '/configuracoes', element: <ConfiguracoesPage /> },
+          ...rotasObras,
+          ...rotasClientes,
           // Cada módulo terá sua própria pasta e suas próprias rotas; até lá, placeholder.
           ...itensNav.filter((i) => i.emBreve).map((i) => ({ path: i.para, element: <EmBrevePage /> })),
         ],

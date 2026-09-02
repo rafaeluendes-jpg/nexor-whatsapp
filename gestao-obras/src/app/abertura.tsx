@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import splash from '/splash.jpg?url'
 import { useAuth } from '@/modules/auth/hooks/use-auth'
+import { cn } from '@/shared/lib/utils'
 
 const CHAVE = 'r2on:abertura-vista'
 const TEMPO_MINIMO_MS = 1400
@@ -51,7 +52,11 @@ export function Abertura() {
   return (
     <div
       aria-hidden="true"
-      className="fixed inset-0 z-[9999] bg-carvao transition-opacity ease-out"
+      /* enquanto sai, os cliques já atravessam para a tela de baixo */
+      className={cn(
+        'fixed inset-0 z-[9999] bg-carvao transition-opacity ease-out',
+        estado === 'saindo' && 'pointer-events-none',
+      )}
       style={{ opacity: estado === 'saindo' ? 0 : 1, transitionDuration: `${DURACAO_FADE_MS}ms` }}
     >
       <img

@@ -50,3 +50,21 @@ export function useMinhasOrganizacoes() {
     },
   })
 }
+
+const PAPEIS_GESTAO = ['proprietario', 'administrador', 'engenheiro', 'mestre_obras']
+const PAPEIS_ADMIN = ['proprietario', 'administrador']
+
+/** Organização em uso (a primeira do usuário) e o que ele pode fazer nela. */
+export function useOrganizacaoAtual() {
+  const q = useMinhasOrganizacoes()
+  const membro = q.data?.[0] ?? null
+  return {
+    carregando: q.isLoading,
+    membro,
+    organizacaoId: membro?.organizacao_id ?? null,
+    organizacao: membro?.organizacoes ?? null,
+    papel: membro?.papel ?? null,
+    podeGerir: !!membro && PAPEIS_GESTAO.includes(membro.papel),
+    ehAdmin: !!membro && PAPEIS_ADMIN.includes(membro.papel),
+  }
+}

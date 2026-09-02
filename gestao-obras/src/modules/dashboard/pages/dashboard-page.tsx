@@ -31,7 +31,7 @@ export function DashboardPage() {
     <>
       <CabecalhoPagina
         titulo={isLoading ? 'Olá!' : `Olá, ${primeiroNome ?? ''}!`}
-        descricao="Este é o painel inicial. Os indicadores das obras aparecem aqui conforme os módulos forem entrando."
+        descricao="Bem-vindo ao R2ON. Os indicadores das obras aparecem aqui conforme os módulos forem entrando."
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 mb-8">

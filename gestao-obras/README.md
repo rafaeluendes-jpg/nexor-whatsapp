@@ -1,8 +1,17 @@
-# Gestão de Obras
+# R2ON · Gestão inteligente de obras
 
 Aplicativo web (PWA) de gestão inteligente de obras: funciona no celular como aplicativo
 instalável e no computador em tela cheia. Vive na pasta `gestao-obras/`, separado do robô
 de WhatsApp que está na raiz deste repositório.
+
+## Marca
+
+- Nome: **R2ON** · frase: **Gestão inteligente de obras**
+- Laranja `#FF6A00` (ação, destaque, progresso) · Carvão `#111315` (fundo, sidebar) · Branco `#FFFFFF`
+- Apoio: Grafite `#25282B` (cards, menus) · Cinza claro `#F4F5F6` (fundo claro) · Cinza médio `#8B9097` (texto secundário)
+- Regra: laranja é cor de ação, não de preenchimento. Os tokens estão em `src/index.css`.
+- Arquivos: `src/shared/assets/marca/` (wordmark, lockup, símbolo), `public/icons/` (PWA), `public/splash.jpg` (abertura).
+- Abertura: `src/app/abertura.tsx` mostra a arte e esmaece para o login (uma vez por sessão).
 
 ## Stack
 

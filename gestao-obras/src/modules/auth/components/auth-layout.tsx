@@ -1,5 +1,6 @@
 import { Outlet } from 'react-router'
-import { HardHat, ShieldCheck, FolderLock, Smartphone } from 'lucide-react'
+import { ShieldCheck, FolderLock, Smartphone } from 'lucide-react'
+import { LogoLockup, LogoWordmark, NOME_APP, TAGLINE } from '@/shared/components/marca/logo'
 
 const destaques = [
   { icone: ShieldCheck, titulo: 'Segurança em primeiro lugar', texto: 'Cada obra é um cofre: só quem você autoriza vê.' },
@@ -12,15 +13,9 @@ export function AuthLayout() {
     <div className="min-h-dvh grid lg:grid-cols-[1.1fr_1fr]">
       {/* Painel de marca: só no desktop */}
       <aside className="hidden lg:flex flex-col justify-between bg-sidebar text-sidebar-foreground p-12 relative overflow-hidden">
-        <div className="absolute inset-0 opacity-[0.07] bg-[radial-gradient(circle_at_20%_20%,white,transparent_45%),radial-gradient(circle_at_80%_70%,white,transparent_40%)]" />
-        <div className="relative flex items-center gap-3">
-          <div className="size-11 rounded-xl bg-brand text-brand-foreground grid place-items-center shadow-lg shadow-brand/30">
-            <HardHat className="size-6" />
-          </div>
-          <div>
-            <p className="font-semibold text-lg leading-tight">Gestão de Obras</p>
-            <p className="text-xs text-sidebar-foreground/70">Gestão inteligente da construção</p>
-          </div>
+        <div className="absolute inset-0 opacity-[0.07] bg-[linear-gradient(135deg,transparent_40%,#FF6A00_50%,transparent_60%)]" />
+        <div className="relative">
+          <LogoLockup className="h-20" />
         </div>
         <div className="relative space-y-8 max-w-md">
           <h1 className="text-4xl font-semibold leading-tight tracking-tight">
@@ -40,18 +35,17 @@ export function AuthLayout() {
             ))}
           </ul>
         </div>
-        <p className="relative text-xs text-sidebar-foreground/50">© {new Date().getFullYear()} · Dados protegidos com criptografia e controle de acesso por obra.</p>
+        <p className="relative text-xs text-sidebar-foreground/50">© {new Date().getFullYear()} {NOME_APP} · {TAGLINE}. Dados protegidos com criptografia e controle de acesso por obra.</p>
       </aside>
 
       {/* Formulário */}
       <main className="flex flex-col safe-top safe-bottom">
-        <header className="lg:hidden flex items-center gap-3 px-6 pt-8">
-          <div className="size-10 rounded-xl bg-primary text-primary-foreground grid place-items-center">
-            <HardHat className="size-5" />
-          </div>
-          <div>
-            <p className="font-semibold leading-tight">Gestão de Obras</p>
-            <p className="text-xs text-muted-foreground">Gestão inteligente da construção</p>
+        <header className="lg:hidden px-6 pt-8">
+          <div className="flex flex-col items-center gap-2 rounded-2xl bg-carvao px-4 py-4">
+            <LogoWordmark className="h-8" />
+            <p className="text-[10px] uppercase tracking-[0.22em] text-white/75 whitespace-nowrap">
+              <span className="text-brand">—</span> {TAGLINE} <span className="text-brand">—</span>
+            </p>
           </div>
         </header>
         <div className="flex-1 flex items-center justify-center px-6 py-10">

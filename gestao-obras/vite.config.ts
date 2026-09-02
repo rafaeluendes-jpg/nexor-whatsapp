@@ -11,17 +11,17 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'icons/*.png'],
+      includeAssets: ['favicon.png', 'icons/*.png', 'splash.jpg', 'splash-sm.jpg'],
       manifest: {
-        name: 'Gestão de Obras',
-        short_name: 'Obras',
-        description: 'Gestão inteligente de obras: cronograma, etapas, financeiro, equipe, documentos e cliente.',
+        name: 'R2ON · Gestão inteligente de obras',
+        short_name: 'R2ON',
+        description: 'R2ON: gestão inteligente de obras. Cronograma, etapas, financeiro, equipe, documentos e portal do cliente.',
         lang: 'pt-BR',
         start_url: '/',
         display: 'standalone',
         orientation: 'portrait',
-        background_color: '#0b1220',
-        theme_color: '#0b1220',
+        background_color: '#111315',
+        theme_color: '#111315',
         icons: [
           { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router'
-import { HardHat, LogOut, Menu, MoreHorizontal, Settings, User } from 'lucide-react'
+import { LogOut, Menu, MoreHorizontal, Settings, User } from 'lucide-react'
+import { LogoWordmark, TAGLINE } from '@/shared/components/marca/logo'
 import { useAuth } from '@/modules/auth/hooks/use-auth'
 import { useMinhasOrganizacoes, usePerfil } from '@/modules/auth/hooks/use-perfil'
 import { Avatar, AvatarFallback, AvatarImage } from '@/shared/components/ui/avatar'
@@ -55,14 +56,12 @@ function MenuLateral({ aoNavegar }: { aoNavegar?: () => void }) {
   const org = orgs?.[0]?.organizacoes
   return (
     <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
-      <div className="flex items-center gap-3 px-5 h-16 border-b border-sidebar-border">
-        <div className="size-9 rounded-lg bg-brand text-brand-foreground grid place-items-center">
-          <HardHat className="size-5" />
-        </div>
-        <div className="min-w-0">
-          <p className="font-semibold leading-tight truncate">{org?.nome ?? 'Gestão de Obras'}</p>
-          <p className="text-[11px] text-sidebar-foreground/60 truncate">Gestão inteligente</p>
-        </div>
+      <div className="px-5 h-16 border-b border-sidebar-border flex items-center">
+        <LogoWordmark className="h-7" />
+      </div>
+      <div className="px-5 py-3 border-b border-sidebar-border">
+        <p className="text-[10px] uppercase tracking-wider text-sidebar-foreground/45">Conta</p>
+        <p className="font-medium text-sm leading-tight truncate">{org?.nome ?? TAGLINE}</p>
       </div>
       <nav className="flex-1 overflow-y-auto p-3 space-y-1">
         {itensNav.map((item) => (

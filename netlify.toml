@@ -1,8 +1,0 @@
-# Site R2ON no Netlify. O app vive em gestao-obras/; o robô de WhatsApp (raiz) roda no Render.
-[build]
-  base = "gestao-obras"
-  command = "pnpm build"
-  publish = "dist"
-
-[build.environment]
-  NODE_VERSION = "22"

@@ -62,8 +62,28 @@ pnpm dev
 
 ## Banco de dados
 
-As migrações em `supabase/migrations/` são aplicadas em ordem (0001 → 0007).
-Depois de aplicar, gere os tipos TypeScript para `src/shared/types/database.ts`.
+Projeto Supabase: **gestao-obras** (`ikvlqxrlgjimyylmhiec`, região São Paulo). Projeto próprio,
+separado dos outros sistemas: usuários, dados, arquivos e chaves só deste app.
+
+As migrações em `supabase/migrations/` são aplicadas em ordem (0001 → 0009) e já estão
+aplicadas no projeto. Depois de cada nova migração, regenere os tipos TypeScript em
+`src/shared/types/database.ts` e rode os advisors de segurança do Supabase.
+
+As funções usadas pelas políticas de RLS ficam no schema privado `seguranca` (não exposto
+pela API), então ninguém consegue chamá-las por `/rest/v1/rpc`.
+
+Teste de segurança: `supabase/testes/rls_base.sql` roda no SQL Editor e termina em
+ROLLBACK. Ele cria dois usuários de mentira, uma obra e confere 18 pontos: isolamento
+entre contas, cliente vê só a própria obra, anônimo bloqueado, auditoria com autor.
+
+### Configuração no painel do Supabase (manual, uma vez)
+
+Em *Authentication → URL Configuration*:
+- **Site URL**: a URL do app publicado (ex.: `https://gestao-obras.netlify.app`)
+- **Redirect URLs**: `https://SEU-DOMINIO/auth/callback` e `http://localhost:5173/auth/callback`
+
+Em *Authentication → Providers → Email*: manter **Confirm email** ligado e, se possível,
+ativar **Prevent use of leaked passwords** (Pro) em *Auth → Password security*.
 
 ## Scripts
 

@@ -94,6 +94,19 @@ Em *Authentication → URL Configuration*:
 Em *Authentication → Providers → Email*: manter **Confirm email** ligado e, se possível,
 ativar **Prevent use of leaked passwords** (Pro) em *Auth → Password security*.
 
+## Publicação (Netlify)
+
+Site criado: **r2on** → `https://r2on.netlify.app` (painel: https://app.netlify.com/projects/r2on).
+As variáveis `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` já estão configuradas no site.
+
+O deploy é feito pelo GitHub (o `netlify.toml` da raiz aponta `base = "gestao-obras"`):
+1. No painel do site: *Site configuration → Build & deploy → Link repository*.
+2. Escolha `rafaeluendes-jpg/nexor-whatsapp` e a branch que quer publicar.
+3. O Netlify lê o `netlify.toml` e faz o build com `pnpm build`. Cada push vira um deploy.
+
+Depois, no Supabase (*Authentication → URL Configuration*): Site URL `https://r2on.netlify.app`
+e Redirect URL `https://r2on.netlify.app/auth/callback`.
+
 ## Scripts
 
 - `pnpm dev` · desenvolvimento

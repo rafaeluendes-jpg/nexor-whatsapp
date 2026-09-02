@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16213a"/>
+      <stop offset="1" stop-color="#0b1220"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- capacete/telhado estilizado + barra de progresso -->
+  <path d="M112 300 L256 150 L400 300 Z" fill="none" stroke="#f2b134" stroke-width="34" stroke-linejoin="round" stroke-linecap="round"/>
+  <rect x="150" y="300" width="212" height="34" rx="17" fill="#f2b134"/>
+  <rect x="150" y="360" width="212" height="24" rx="12" fill="#ffffff" fill-opacity="0.18"/>
+  <rect x="150" y="360" width="140" height="24" rx="12" fill="#ffffff" fill-opacity="0.9"/>
+</svg>
